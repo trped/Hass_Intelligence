@@ -1,6 +1,6 @@
 #!/usr/bin/with-contenv bashio
 
-bashio::log.info "Starting HA Intelligence v0.1.0..."
+bashio::log.info "Starting HA Intelligence v0.1.1..."
 
 # Export options as environment variables
 export MQTT_HOST="$(bashio::config 'mqtt_host')"
