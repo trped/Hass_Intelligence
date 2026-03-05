@@ -12,8 +12,11 @@ RUN apk add --no-cache \
 COPY requirements.txt /tmp/
 RUN pip3 install --no-cache-dir -r /tmp/requirements.txt
 
+# Copy run script
+COPY run.sh /run.sh
+RUN chmod a+x /run.sh
+
 # Copy application
-COPY rootfs /
 COPY app /app
 
 # Set working directory

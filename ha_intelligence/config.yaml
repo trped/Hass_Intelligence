@@ -2,7 +2,7 @@ name: "HA Intelligence"
 version: "0.1.0"
 slug: ha_intelligence
 description: "Self-learning household intelligence system"
-url: "https://github.com/placeholder/Hass_Intelligence"
+url: "https://github.com/trped/Hass_Intelligence"
 arch:
   - aarch64
   - amd64
@@ -55,4 +55,3 @@ schema:
   feedback_quiet_start: str
   feedback_quiet_end: str
   log_level: list(debug|info|warning|error)
-image: "ghcr.io/{repository}/ha_intelligence-{arch}"
