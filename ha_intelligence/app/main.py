@@ -7,6 +7,7 @@ import os
 import signal
 import sys
 
+import aiohttp
 import uvicorn
 
 from database import Database
@@ -31,6 +32,27 @@ def resolve_supervisor_token() -> str:
     except (FileNotFoundError, PermissionError):
         pass
     return ''
+
+async def discover_mqtt(token: str) -> dict | None:
+    """Auto-discover MQTT broker via Supervisor services API."""
+    url = 'http://supervisor/services/mqtt'
+    headers = {'Authorization': f'Bearer {token}'}
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, headers=headers) as resp:
+                if resp.status == 200:
+                    data = (await resp.json()).get('data', {})
+                    if data.get('host'):
+                        return {
+                            'host': data['host'],
+                            'port': data.get('port', 1883),
+                            'username': data.get('username'),
+                            'password': data.get('password'),
+                        }
+    except Exception as e:
+        logger.warning(f"MQTT auto-discovery failed: {e}")
+    return None
+
 
 # ── Logging ─────────────────────────────────────────────────────
 
@@ -190,7 +212,7 @@ class SensorEngine:
         self.mqtt.publish_system_status(
             status='learning',
             attributes={
-                'version': '0.1.5',
+                'version': '0.1.6',
                 'events_24h': stats['events_24h'],
                 'events_total': stats['events_total'],
                 'entities_discovered': stats['entities_discovered'],
@@ -206,7 +228,7 @@ class SensorEngine:
 
 async def main():
     logger.info("=" * 50)
-    logger.info("HA Intelligence v0.1.5 starting...")
+    logger.info("HA Intelligence v0.1.6 starting...")
     logger.info("=" * 50)
 
     # Load config
@@ -221,11 +243,25 @@ async def main():
     db = Database()
     logger.info("Database initialized")
 
+    # Auto-discover MQTT broker via Supervisor API
+    mqtt_host = options.get('mqtt_host', 'core-mosquitto')
+    mqtt_port = options.get('mqtt_port', 1883)
+    mqtt_user = options.get('mqtt_user') or None
+    mqtt_pass = options.get('mqtt_password') or None
+
+    if token:
+        discovered = await discover_mqtt(token)
+        if discovered:
+            mqtt_host = discovered['host']
+            mqtt_port = discovered['port']
+            if discovered.get('username'):
+                mqtt_user = discovered['username']
+                mqtt_pass = discovered.get('password')
+            logger.info(f"MQTT auto-discovered: {mqtt_host}:{mqtt_port}")
+
     mqtt = MQTTPublisher(
-        host=options.get('mqtt_host', 'core-mosquitto'),
-        port=options.get('mqtt_port', 1883),
-        username=options.get('mqtt_user') or None,
-        password=options.get('mqtt_password') or None,
+        host=mqtt_host, port=mqtt_port,
+        username=mqtt_user, password=mqtt_pass,
     )
     logger.info("MQTT publisher initialized")
 
