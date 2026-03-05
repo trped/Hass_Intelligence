@@ -5,7 +5,7 @@ import os
 from pathlib import Path
 
 from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 logger = logging.getLogger(__name__)
 
@@ -16,13 +16,21 @@ INGRESS_PATH = os.environ.get('INGRESS_PATH', '')
 def create_app(db, event_listener, mqtt_pub) -> FastAPI:
     """Create FastAPI app with ingress support."""
 
+    # Strip trailing slashes from ingress path to avoid double-slash issues
+    root = INGRESS_PATH.rstrip('/')
+
     app = FastAPI(
         title="HA Intelligence",
-        root_path=INGRESS_PATH,
+        root_path=root,
     )
 
     @app.get("/", response_class=HTMLResponse)
     async def index():
+        return get_dashboard_html()
+
+    @app.get("//", response_class=HTMLResponse)
+    async def index_double_slash():
+        """Handle HA ingress double-slash redirect."""
         return get_dashboard_html()
 
     @app.get("/api/stats")
@@ -57,7 +65,7 @@ def create_app(db, event_listener, mqtt_pub) -> FastAPI:
     async def health():
         return {
             "status": "ok",
-            "version": "0.1.6",
+            "version": "0.1.7",
             "ws_connected": event_listener.connected,
             "mqtt_connected": mqtt_pub.connected,
         }
