@@ -65,7 +65,7 @@ def create_app(db, event_listener, mqtt_pub) -> FastAPI:
     async def health():
         return {
             "status": "ok",
-            "version": "0.1.7",
+            "version": "0.1.8",
             "ws_connected": event_listener.connected,
             "mqtt_connected": mqtt_pub.connected,
         }
@@ -181,7 +181,8 @@ def get_dashboard_html() -> str:
 </div>
 
 <script>
-const BASE = '';
+// Derive ingress base from current page URL (strip trailing slashes)
+const BASE = window.location.pathname.replace(/\/+$/, '');
 
 async function fetchJson(path) {
   const res = await fetch(BASE + path);
