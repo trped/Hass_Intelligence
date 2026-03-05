@@ -15,6 +15,23 @@ from event_listener import EventListener
 from mqtt_publisher import MQTTPublisher
 from web_ui import create_app
 
+
+def resolve_supervisor_token() -> str:
+    """Get SUPERVISOR_TOKEN from env or S6 container environment file."""
+    token = os.environ.get('SUPERVISOR_TOKEN', '')
+    if token:
+        return token
+    # Fallback: S6 stores env vars in files
+    try:
+        with open('/run/s6/container_environment/SUPERVISOR_TOKEN') as f:
+            token = f.read().strip()
+            if token:
+                os.environ['SUPERVISOR_TOKEN'] = token
+                return token
+    except (FileNotFoundError, PermissionError):
+        pass
+    return ''
+
 # ── Logging ─────────────────────────────────────────────────────
 
 LOG_LEVEL = os.environ.get('LOG_LEVEL', 'info').upper()
@@ -173,7 +190,7 @@ class SensorEngine:
         self.mqtt.publish_system_status(
             status='learning',
             attributes={
-                'version': '0.1.3',
+                'version': '0.1.5',
                 'events_24h': stats['events_24h'],
                 'events_total': stats['events_total'],
                 'entities_discovered': stats['entities_discovered'],
@@ -189,12 +206,16 @@ class SensorEngine:
 
 async def main():
     logger.info("=" * 50)
-    logger.info("HA Intelligence v0.1.3 starting...")
+    logger.info("HA Intelligence v0.1.5 starting...")
     logger.info("=" * 50)
 
     # Load config
     options = load_options()
     os.environ.setdefault('LOG_LEVEL', options.get('log_level', 'info'))
+
+    # Resolve SUPERVISOR_TOKEN (may be in S6 env file, not Docker env)
+    token = resolve_supervisor_token()
+    logger.info(f"SUPERVISOR_TOKEN present: {bool(token)}")
 
     # Initialize components
     db = Database()
