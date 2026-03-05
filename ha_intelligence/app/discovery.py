@@ -41,12 +41,16 @@ class Discovery:
         logger.info("Discovery complete")
 
     async def _discover_areas(self):
-        """Fetch areas from HA area registry via WebSocket-style REST."""
+        """Fetch areas from HA area registry via REST API."""
         try:
             async with aiohttp.ClientSession() as session:
-                # Use the config API to list areas
+                # HA REST API: POST to template endpoint to list areas
+                # Or use the WebSocket-style REST endpoint
+                found = False
+
+                # Method 1: POST to area registry list
                 url = f"{self.ha_url}/api/config/area_registry/list"
-                async with session.get(url, headers=self.headers) as resp:
+                async with session.post(url, headers=self.headers, json={}) as resp:
                     if resp.status == 200:
                         areas = await resp.json()
                         for area in areas:
@@ -56,10 +60,34 @@ class Discovery:
                                 slug = self._slugify(name)
                                 self.db.upsert_room(area_id, name, slug)
                                 logger.info(f"Discovered room: {name} ({slug})")
+                        found = True
                     else:
-                        # Fallback: try WebSocket command
-                        logger.warning(f"Area registry API returned {resp.status}, trying states fallback")
-                        await self._discover_areas_from_states(session)
+                        logger.warning(f"Area registry POST returned {resp.status}")
+
+                # Method 2: Use template API to get areas
+                if not found:
+                    logger.info("Trying template API for area discovery...")
+                    tpl_url = f"{self.ha_url}/api/template"
+                    tpl = '{{ areas() | list | tojson }}'
+                    async with session.post(tpl_url, headers=self.headers,
+                                           json={"template": tpl}) as resp:
+                        if resp.status == 200:
+                            import json
+                            area_ids = json.loads(await resp.text())
+                            for area_id in area_ids:
+                                # Get area name via template
+                                name_tpl = f'{{% set a = area_name("{area_id}") %}}{{{{ a }}}}'
+                                async with session.post(tpl_url, headers=self.headers,
+                                                       json={"template": name_tpl}) as nr:
+                                    name = (await nr.text()).strip() if nr.status == 200 else area_id
+                                slug = self._slugify(name) if name else self._slugify(area_id)
+                                self.db.upsert_room(area_id, name or area_id, slug)
+                                logger.info(f"Discovered room (template): {name} ({slug})")
+                            found = True
+
+                if not found:
+                    logger.warning("All area discovery methods failed, using states fallback")
+                    await self._discover_areas_from_states(session)
         except Exception as e:
             logger.error(f"Area discovery error: {e}")
 

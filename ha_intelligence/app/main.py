@@ -212,7 +212,7 @@ class SensorEngine:
         self.mqtt.publish_system_status(
             status='learning',
             attributes={
-                'version': '0.1.8',
+                'version': '0.1.9',
                 'events_24h': stats['events_24h'],
                 'events_total': stats['events_total'],
                 'entities_discovered': stats['entities_discovered'],
@@ -228,7 +228,7 @@ class SensorEngine:
 
 async def main():
     logger.info("=" * 50)
-    logger.info("HA Intelligence v0.1.8 starting...")
+    logger.info("HA Intelligence v0.1.9 starting...")
     logger.info("=" * 50)
 
     # Load config

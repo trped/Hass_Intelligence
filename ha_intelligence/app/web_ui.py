@@ -65,7 +65,7 @@ def create_app(db, event_listener, mqtt_pub) -> FastAPI:
     async def health():
         return {
             "status": "ok",
-            "version": "0.1.8",
+            "version": "0.1.9",
             "ws_connected": event_listener.connected,
             "mqtt_connected": mqtt_pub.connected,
         }

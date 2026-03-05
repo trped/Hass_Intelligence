@@ -65,7 +65,7 @@ class MQTTPublisher:
                 "name": "HA Intelligence",
                 "manufacturer": "Hyggebo",
                 "model": "Intelligence System",
-                "sw_version": "0.1.8",
+                "sw_version": "0.1.9",
             },
         }
         if icon:
