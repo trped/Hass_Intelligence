@@ -28,6 +28,7 @@ class EventListener:
         )
         self.token = os.environ.get('SUPERVISOR_TOKEN', '')
         self.ws_url = self.ha_url.replace('http', 'ws') + '/websocket'
+        logger.info(f"WS URL: {self.ws_url}, token present: {bool(self.token)}")
 
     @property
     def event_count(self) -> int:
@@ -79,6 +80,7 @@ class EventListener:
                 msg = await ws.receive_json()
                 if msg.get('type') != 'auth_ok':
                     logger.error(f"Auth failed: {msg}")
+                    await asyncio.sleep(30)
                     return
                 logger.info("WebSocket authenticated successfully")
 
