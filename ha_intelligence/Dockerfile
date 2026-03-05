@@ -22,4 +22,3 @@ LABEL \
     io.hass.type="addon" \
     io.hass.version="0.1.0"
 
-CMD [ "/run.sh" ]
