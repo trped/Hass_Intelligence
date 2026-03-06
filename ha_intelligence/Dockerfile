@@ -26,6 +26,6 @@ LABEL \
     io.hass.name="HA Intelligence" \
     io.hass.description="Self-learning household intelligence system" \
     io.hass.type="addon" \
-    io.hass.version="0.3.3"
+    io.hass.version="0.3.4"
 
 CMD ["python3", "/app/main.py"]

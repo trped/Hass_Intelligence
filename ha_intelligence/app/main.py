@@ -108,14 +108,10 @@ class SensorEngine:
                 area_id = attributes.get('area_id')
             if area_id:
                 self._update_room_state(area_id, entity_id, new_state)
-                # Feedback loop: close prediction with actual state
-                self._close_room_feedback(area_id, new_state)
 
         # Track person entities → person state
         if domain == 'person':
             self._update_person_state(entity_id, new_state, attributes)
-            # Feedback loop: close prediction with actual state
-            self._close_person_feedback(entity_id, new_state)
 
         # Track device_tracker → person state
         if domain == 'device_tracker':
@@ -181,33 +177,6 @@ class SensorEngine:
         for area_id in stale_rooms:
             self._room_states[area_id]['sensors'] = {}
             logger.debug(f"Cleared stale sensors for room {area_id}")
-
-    def _close_room_feedback(self, area_id: str, sensor_state: str):
-        """Close feedback loop for room prediction when actual state observed."""
-        actual = 'occupied' if sensor_state == 'on' else 'empty'
-        target = f'room_{area_id}'
-        pred_id = self._last_predictions.get(target)
-        if pred_id:
-            try:
-                self.db.update_prediction_feedback(pred_id, actual, 'auto_sensor')
-            except Exception as e:
-                logger.debug(f"Feedback error for {target}: {e}")
-
-    def _close_person_feedback(self, entity_id: str, ha_state: str):
-        """Close feedback loop for person prediction when actual state observed."""
-        if ha_state == 'home':
-            actual = 'active'
-        elif ha_state == 'not_home':
-            actual = 'away'
-        else:
-            actual = ha_state
-        target = f'person_{entity_id}'
-        pred_id = self._last_predictions.get(target)
-        if pred_id:
-            try:
-                self.db.update_prediction_feedback(pred_id, actual, 'auto_state')
-            except Exception as e:
-                logger.debug(f"Feedback error for {target}: {e}")
 
     def _store_prediction(self, target: str, state: str, confidence: float,
                           method: str):
@@ -290,9 +259,19 @@ class SensorEngine:
                 state = rule_state
                 confidence = rule_confidence
 
-            # Store prediction for feedback loop
+            # Feedback loop: close previous prediction with current actual state
+            target = f'room_{area_id}'
+            prev_id = self._last_predictions.get(target)
+            if prev_id:
+                try:
+                    self.db.update_prediction_feedback(
+                        prev_id, rule_state, 'auto_publish')
+                except Exception as e:
+                    logger.debug(f"Feedback error for {target}: {e}")
+
+            # Store new prediction for next cycle
             self._store_prediction(
-                target=f'room_{area_id}',
+                target=target,
                 state=state,
                 confidence=confidence,
                 method=source,
@@ -363,9 +342,25 @@ class SensorEngine:
                 state = rule_state
                 confidence = rule_confidence
 
-            # Store prediction for feedback loop
+            # Feedback loop: close previous prediction with current actual state
+            if ha_state == 'home':
+                actual_state = 'active'
+            elif ha_state == 'not_home':
+                actual_state = 'away'
+            else:
+                actual_state = ha_state
+            target = f'person_{entity_id}'
+            prev_id = self._last_predictions.get(target)
+            if prev_id:
+                try:
+                    self.db.update_prediction_feedback(
+                        prev_id, actual_state, 'auto_publish')
+                except Exception as e:
+                    logger.debug(f"Feedback error for {target}: {e}")
+
+            # Store new prediction for next cycle
             self._store_prediction(
-                target=f'person_{entity_id}',
+                target=target,
                 state=state,
                 confidence=confidence,
                 method=source,
@@ -434,7 +429,7 @@ class SensorEngine:
         self.mqtt.publish_system_status(
             status=status,
             attributes={
-                'version': '0.3.3',
+                'version': '0.3.4',
                 'events_24h': stats['events_24h'],
                 'events_total': stats['events_total'],
                 'entities_discovered': stats['entities_discovered'],
@@ -530,7 +525,7 @@ class SensorEngine:
 
 async def main():
     logger.info("=" * 50)
-    logger.info("HA Intelligence v0.3.3 starting...")
+    logger.info("HA Intelligence v0.3.4 starting...")
     logger.info("=" * 50)
 
     # Load config

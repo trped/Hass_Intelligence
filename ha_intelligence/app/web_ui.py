@@ -92,7 +92,7 @@ def create_app(db, event_listener, mqtt_pub, registry=None, ml_engine=None) -> F
     async def health():
         return {
             "status": "ok",
-            "version": "0.3.3",
+            "version": "0.3.4",
             "ws_connected": event_listener.connected,
             "mqtt_connected": mqtt_pub.connected,
             "registry_loaded": registry is not None and registry.entity_count > 0,
@@ -220,7 +220,7 @@ def get_dashboard_html() -> str:
 
 <h1>
   <span class="icon">&#129504;</span> HA Intelligence
-  <span class="version">v0.3.3</span>
+  <span class="version">v0.3.4</span>
   <span style="flex:1"></span>
   <button class="refresh-btn" onclick="loadAll()">Opdater</button>
 </h1>
