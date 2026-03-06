@@ -21,10 +21,10 @@ map:
   - config:rw
   - ssl:ro
 options:
-  mqtt_host: "core-mosquitto"
+  mqtt_host: "a0d7b954-emqx"
   mqtt_port: 1883
-  mqtt_user: ""
-  mqtt_password: ""
+  mqtt_user: "admin"
+  mqtt_password: "trped1271"
   haiku_api_key: ""
   haiku_enabled: false
   haiku_anomaly: true
