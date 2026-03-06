@@ -39,9 +39,27 @@ class Database:
         try:
             conn.executescript(SCHEMA_SQL)
             conn.commit()
+            # Run migrations for existing databases
+            self._migrate(conn)
             logger.info(f"Database initialized at {self.path}")
         finally:
             conn.close()
+
+    def _migrate(self, conn):
+        """Add columns that may be missing from older schema versions."""
+        migrations = [
+            ("events", "event_type", "TEXT DEFAULT 'state_changed'"),
+            ("discovered_entities", "device_class", "TEXT"),
+            ("discovered_entities", "platform", "TEXT"),
+            ("discovered_entities", "device_id", "TEXT"),
+        ]
+        for table, column, col_type in migrations:
+            try:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {col_type}")
+                conn.commit()
+                logger.info(f"Migration: added {table}.{column}")
+            except sqlite3.OperationalError:
+                pass  # Column already exists
 
     def execute(self, query: str, params: tuple = (), fetch: bool = False):
         conn = self._connect()
@@ -73,23 +91,25 @@ class Database:
     # ── Events ──────────────────────────────────────────────────
 
     def insert_event(self, entity_id: str, old_state: str, new_state: str,
-                     attributes: dict, timestamp: str = None):
+                     attributes: dict, timestamp: str = None,
+                     event_type: str = 'state_changed'):
         ts = timestamp or datetime.now(timezone.utc).isoformat()
         self.execute(
             """INSERT INTO events
-               (entity_id, old_state, new_state, attributes, recorded_at)
-               VALUES (?, ?, ?, ?, ?)""",
-            (entity_id, old_state, new_state, json.dumps(attributes), ts)
+               (entity_id, old_state, new_state, attributes, recorded_at, event_type)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (entity_id, old_state, new_state, json.dumps(attributes), ts, event_type)
         )
 
     def insert_events_bulk(self, events: list):
         self.execute_many(
             """INSERT INTO events
-               (entity_id, old_state, new_state, attributes, recorded_at)
-               VALUES (?, ?, ?, ?, ?)""",
+               (entity_id, old_state, new_state, attributes, recorded_at, event_type)
+               VALUES (?, ?, ?, ?, ?, ?)""",
             [(e['entity_id'], e.get('old_state', ''),
               e.get('new_state', ''), json.dumps(e.get('attributes', {})),
-              e.get('timestamp', datetime.now(timezone.utc).isoformat()))
+              e.get('timestamp', datetime.now(timezone.utc).isoformat()),
+              e.get('event_type', 'state_changed'))
              for e in events]
         )
 
@@ -104,17 +124,43 @@ class Database:
     # ── Entities (discovered) ───────────────────────────────────
 
     def upsert_entity(self, entity_id: str, domain: str, area_id: str = None,
-                      friendly_name: str = None):
+                      friendly_name: str = None, device_class: str = None,
+                      platform: str = None, device_id: str = None):
         self.execute(
             """INSERT INTO discovered_entities
-               (entity_id, domain, area_id, friendly_name, last_seen)
-               VALUES (?, ?, ?, ?, datetime('now'))
+               (entity_id, domain, area_id, friendly_name, device_class,
+                platform, device_id, last_seen)
+               VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
                ON CONFLICT(entity_id) DO UPDATE SET
                  area_id = COALESCE(excluded.area_id, area_id),
                  friendly_name = COALESCE(excluded.friendly_name, friendly_name),
+                 device_class = COALESCE(excluded.device_class, device_class),
+                 platform = COALESCE(excluded.platform, platform),
+                 device_id = COALESCE(excluded.device_id, device_id),
                  last_seen = datetime('now'),
                  event_count = event_count + 1""",
-            (entity_id, domain, area_id, friendly_name)
+            (entity_id, domain, area_id, friendly_name, device_class,
+             platform, device_id)
+        )
+
+    def upsert_entities_bulk(self, entities: list):
+        """Bulk upsert entities from registry data."""
+        self.execute_many(
+            """INSERT INTO discovered_entities
+               (entity_id, domain, area_id, friendly_name, device_class,
+                platform, device_id, last_seen)
+               VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
+               ON CONFLICT(entity_id) DO UPDATE SET
+                 area_id = COALESCE(excluded.area_id, area_id),
+                 friendly_name = COALESCE(excluded.friendly_name, friendly_name),
+                 device_class = COALESCE(excluded.device_class, device_class),
+                 platform = COALESCE(excluded.platform, platform),
+                 device_id = COALESCE(excluded.device_id, device_id),
+                 last_seen = datetime('now')""",
+            [(e['entity_id'], e['domain'], e.get('area_id'),
+              e.get('friendly_name'), e.get('device_class'),
+              e.get('platform'), e.get('device_id'))
+             for e in entities]
         )
 
     def get_discovered_entities(self, domain: str = None) -> list:
@@ -125,6 +171,22 @@ class Database:
             )
         return self.execute(
             "SELECT * FROM discovered_entities ORDER BY event_count DESC",
+            fetch=True
+        )
+
+    def get_entities_with_area(self) -> list:
+        """Get entities that have an area_id assigned."""
+        return self.execute(
+            "SELECT * FROM discovered_entities WHERE area_id IS NOT NULL ORDER BY area_id, domain",
+            fetch=True
+        )
+
+    def get_event_type_stats(self) -> list:
+        """Get event counts grouped by event_type."""
+        return self.execute(
+            """SELECT event_type, COUNT(*) as cnt FROM events
+               WHERE recorded_at > datetime('now', '-24 hours')
+               GROUP BY event_type ORDER BY cnt DESC""",
             fetch=True
         )
 
@@ -207,22 +269,28 @@ CREATE TABLE IF NOT EXISTS events (
     new_state TEXT DEFAULT '',
     attributes TEXT DEFAULT '{}',
     recorded_at TEXT NOT NULL,
-    processed INTEGER DEFAULT 0
+    processed INTEGER DEFAULT 0,
+    event_type TEXT DEFAULT 'state_changed'
 );
 CREATE INDEX IF NOT EXISTS idx_events_entity ON events(entity_id);
 CREATE INDEX IF NOT EXISTS idx_events_time ON events(recorded_at);
+CREATE INDEX IF NOT EXISTS idx_events_type ON events(event_type);
 
 CREATE TABLE IF NOT EXISTS discovered_entities (
     entity_id TEXT PRIMARY KEY,
     domain TEXT NOT NULL,
     area_id TEXT,
     friendly_name TEXT,
+    device_class TEXT,
+    platform TEXT,
+    device_id TEXT,
     first_seen TEXT DEFAULT (datetime('now')),
     last_seen TEXT DEFAULT (datetime('now')),
     event_count INTEGER DEFAULT 1,
     weight REAL DEFAULT 0.5
 );
 CREATE INDEX IF NOT EXISTS idx_entities_domain ON discovered_entities(domain);
+CREATE INDEX IF NOT EXISTS idx_entities_area ON discovered_entities(area_id);
 
 CREATE TABLE IF NOT EXISTS rooms (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

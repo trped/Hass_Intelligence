@@ -14,6 +14,7 @@ from database import Database
 from discovery import Discovery
 from event_listener import EventListener
 from mqtt_publisher import MQTTPublisher
+from registry import Registry
 from web_ui import create_app
 
 
@@ -86,10 +87,12 @@ class SensorEngine:
     ML models will be added in v0.2+.
     """
 
-    def __init__(self, db: Database, mqtt: MQTTPublisher, discovery: Discovery):
+    def __init__(self, db: Database, mqtt: MQTTPublisher, discovery: Discovery,
+                 registry: Registry = None):
         self.db = db
         self.mqtt = mqtt
         self.discovery = discovery
+        self.registry = registry
         self._room_states = {}   # area_id -> last known state info
         self._person_states = {} # entity_id -> last known state info
         self._publish_interval = 60  # seconds
@@ -100,10 +103,15 @@ class SensorEngine:
         domain = entity_id.split('.')[0]
 
         # Track motion/occupancy sensors → room state
+        # Use registry to resolve area_id (NOT from state attributes)
         if domain in ('binary_sensor',) and any(
             kw in entity_id for kw in ('motion', 'occupancy', 'presence', 'mmwave')
         ):
-            area_id = attributes.get('area_id')
+            area_id = None
+            if self.registry:
+                area_id = self.registry.get_area_id(entity_id)
+            if not area_id:
+                area_id = attributes.get('area_id')
             if area_id:
                 self._update_room_state(area_id, entity_id, new_state)
 
@@ -209,10 +217,17 @@ class SensorEngine:
     async def _publish_system(self):
         """Publish system status sensor."""
         stats = self.db.get_stats()
+        reg_info = {}
+        if self.registry:
+            reg_info = {
+                'registry_entities': self.registry.entity_count,
+                'registry_devices': self.registry.device_count,
+                'registry_mapped': self.registry.mapped_count,
+            }
         self.mqtt.publish_system_status(
             status='learning',
             attributes={
-                'version': '0.1.9',
+                'version': '0.2.0',
                 'events_24h': stats['events_24h'],
                 'events_total': stats['events_total'],
                 'entities_discovered': stats['entities_discovered'],
@@ -220,6 +235,7 @@ class SensorEngine:
                 'persons': stats['persons'],
                 'ml_active': False,
                 'haiku_active': False,
+                **reg_info,
             }
         )
 
@@ -228,7 +244,7 @@ class SensorEngine:
 
 async def main():
     logger.info("=" * 50)
-    logger.info("HA Intelligence v0.1.9 starting...")
+    logger.info("HA Intelligence v0.2.0 starting...")
     logger.info("=" * 50)
 
     # Load config
@@ -242,6 +258,10 @@ async def main():
     # Initialize components
     db = Database()
     logger.info("Database initialized")
+
+    # Load entity/device registries
+    registry = Registry(db)
+    await registry.load_all()
 
     # Auto-discover MQTT broker via Supervisor API
     mqtt_host = options.get('mqtt_host', 'core-mosquitto')
@@ -269,11 +289,14 @@ async def main():
     await discovery.discover_all()
     logger.info("Discovery complete")
 
-    sensor_engine = SensorEngine(db, mqtt, discovery)
-    event_listener = EventListener(db, on_state_change=sensor_engine.on_state_change)
+    sensor_engine = SensorEngine(db, mqtt, discovery, registry=registry)
+    event_listener = EventListener(
+        db, registry=registry,
+        on_state_change=sensor_engine.on_state_change
+    )
 
     # Create web app
-    app = create_app(db, event_listener, mqtt)
+    app = create_app(db, event_listener, mqtt, registry=registry)
 
     # Start all tasks
     loop = asyncio.get_event_loop()
