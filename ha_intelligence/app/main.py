@@ -222,7 +222,7 @@ class SensorEngine:
 
 async def main():
     logger.info("=" * 50)
-    logger.info("HA Intelligence v0.2.0 starting...")
+    logger.info("HA Intelligence v0.2.1 starting...")
     logger.info("=" * 50)
 
     # Load config
