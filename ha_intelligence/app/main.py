@@ -56,13 +56,53 @@ async def discover_mqtt(token: str) -> dict | None:
     except Exception as e:
         logger.debug(f"Supervisor MQTT service check failed: {e}")
 
-    # 2) Fallback: detect known MQTT add-ons (EMQX, Mosquitto)
+    # 2) Fallback: detect MQTT broker from known add-ons with credentials
+    #    Many add-ons (Z2M, Node-RED) store MQTT config with user/pass
+    credential_sources = [
+        '45df7312_zigbee2mqtt',   # Zigbee2MQTT
+        'a0d7b954_nodered',       # Node-RED
+    ]
     mqtt_addons = [
         ('a0d7b954_emqx', 'EMQX'),
         ('core_mosquitto', 'Mosquitto'),
     ]
     try:
         async with aiohttp.ClientSession() as session:
+            # 2a) Try to get credentials from add-ons that use MQTT
+            mqtt_user = None
+            mqtt_pass = None
+            for slug in credential_sources:
+                try:
+                    async with session.get(
+                        f'http://supervisor/addons/{slug}/info', headers=headers
+                    ) as resp:
+                        if resp.status != 200:
+                            continue
+                        info = (await resp.json()).get('data', {})
+                        opts = info.get('options', {})
+                        mqtt_cfg = opts.get('mqtt', {})
+                        if mqtt_cfg.get('user') and mqtt_cfg.get('password'):
+                            mqtt_user = mqtt_cfg['user']
+                            mqtt_pass = mqtt_cfg['password']
+                            # Also extract host from mqtt server URL if present
+                            server = mqtt_cfg.get('server', '')
+                            if server:
+                                # Parse "mqtt://hostname:port"
+                                host = server.replace('mqtt://', '').split(':')[0]
+                                if host:
+                                    logger.info(
+                                        f"MQTT credentials from {slug}, broker: {host}"
+                                    )
+                                    return {
+                                        'host': host,
+                                        'port': 1883,
+                                        'username': mqtt_user,
+                                        'password': mqtt_pass,
+                                    }
+                except Exception:
+                    continue
+
+            # 2b) Detect running MQTT broker add-ons
             for slug, name in mqtt_addons:
                 try:
                     async with session.get(
@@ -73,15 +113,14 @@ async def discover_mqtt(token: str) -> dict | None:
                         info = (await resp.json()).get('data', {})
                         if info.get('state') != 'started':
                             continue
-                        # Use hostname or IP from add-on info
                         host = info.get('hostname') or info.get('ip_address')
                         if host:
                             logger.info(f"MQTT broker detected: {name} at {host}")
                             return {
                                 'host': host,
                                 'port': 1883,
-                                'username': None,
-                                'password': None,
+                                'username': mqtt_user,
+                                'password': mqtt_pass,
                             }
                 except Exception:
                     continue
