@@ -102,7 +102,7 @@ def create_app(db, event_listener, mqtt_pub, registry=None) -> FastAPI:
 
 
 def get_dashboard_html() -> str:
-    return """<!DOCTYPE html>
+    return r"""<!DOCTYPE html>
 <html lang="da">
 <head>
 <meta charset="UTF-8">

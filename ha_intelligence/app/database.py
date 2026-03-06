@@ -37,10 +37,13 @@ class Database:
     def _init_schema(self):
         conn = self._connect()
         try:
+            # 1) Create base tables (v0.1.x compatible - no new columns)
             conn.executescript(SCHEMA_SQL)
             conn.commit()
-            # Run migrations for existing databases
+            # 2) Migrate: add columns that may be missing from older versions
             self._migrate(conn)
+            # 3) Create indexes on migrated columns (safe now that columns exist)
+            self._create_post_migration_indexes(conn)
             logger.info(f"Database initialized at {self.path}")
         finally:
             conn.close()
@@ -60,6 +63,19 @@ class Database:
                 logger.info(f"Migration: added {table}.{column}")
             except sqlite3.OperationalError:
                 pass  # Column already exists
+
+    def _create_post_migration_indexes(self, conn):
+        """Create indexes on columns added by migrations."""
+        indexes = [
+            "CREATE INDEX IF NOT EXISTS idx_events_type ON events(event_type)",
+            "CREATE INDEX IF NOT EXISTS idx_entities_area ON discovered_entities(area_id)",
+        ]
+        for sql in indexes:
+            try:
+                conn.execute(sql)
+                conn.commit()
+            except sqlite3.OperationalError as e:
+                logger.warning(f"Index creation skipped: {e}")
 
     def execute(self, query: str, params: tuple = (), fetch: bool = False):
         conn = self._connect()
@@ -269,28 +285,22 @@ CREATE TABLE IF NOT EXISTS events (
     new_state TEXT DEFAULT '',
     attributes TEXT DEFAULT '{}',
     recorded_at TEXT NOT NULL,
-    processed INTEGER DEFAULT 0,
-    event_type TEXT DEFAULT 'state_changed'
+    processed INTEGER DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_events_entity ON events(entity_id);
 CREATE INDEX IF NOT EXISTS idx_events_time ON events(recorded_at);
-CREATE INDEX IF NOT EXISTS idx_events_type ON events(event_type);
 
 CREATE TABLE IF NOT EXISTS discovered_entities (
     entity_id TEXT PRIMARY KEY,
     domain TEXT NOT NULL,
     area_id TEXT,
     friendly_name TEXT,
-    device_class TEXT,
-    platform TEXT,
-    device_id TEXT,
     first_seen TEXT DEFAULT (datetime('now')),
     last_seen TEXT DEFAULT (datetime('now')),
     event_count INTEGER DEFAULT 1,
     weight REAL DEFAULT 0.5
 );
 CREATE INDEX IF NOT EXISTS idx_entities_domain ON discovered_entities(domain);
-CREATE INDEX IF NOT EXISTS idx_entities_area ON discovered_entities(area_id);
 
 CREATE TABLE IF NOT EXISTS rooms (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -330,7 +340,7 @@ CREATE TABLE IF NOT EXISTS system_config (
 
 -- Default config
 INSERT OR IGNORE INTO system_config (key, value) VALUES
-    ('version', '0.1.9'),
+    ('version', '0.2.0'),
     ('started_at', datetime('now')),
     ('confidence_threshold', '0.4');
 """
