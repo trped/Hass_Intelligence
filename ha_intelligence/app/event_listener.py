@@ -100,6 +100,8 @@ class EventListener:
                 logger.info("WebSocket authenticated successfully")
 
                 # Step 3: Subscribe to multiple event types
+                # After first subscription, events start flowing immediately.
+                # We must skip event messages and wait for our subscribe response.
                 for event_type in SUBSCRIBED_EVENT_TYPES:
                     sub_id = self._next_id()
                     await ws.send_json({
@@ -107,11 +109,21 @@ class EventListener:
                         'type': 'subscribe_events',
                         'event_type': event_type
                     })
-                    msg = await ws.receive_json()
-                    if msg.get('success'):
-                        logger.info(f"Subscribed to {event_type}")
-                    else:
-                        logger.warning(f"Failed to subscribe to {event_type}: {msg}")
+                    # Read messages until we get OUR subscribe response
+                    for _ in range(50):  # safety limit
+                        msg = await ws.receive_json()
+                        if msg.get('id') == sub_id:
+                            if msg.get('success'):
+                                logger.info(f"Subscribed to {event_type}")
+                            else:
+                                logger.warning(
+                                    f"Failed to subscribe to {event_type}: "
+                                    f"{msg.get('error', msg)}"
+                                )
+                            break
+                        # It's an event from an earlier subscription — process it
+                        if msg.get('type') == 'event':
+                            await self._route_event(msg['event'])
 
                 # Step 4: Listen for events
                 async for msg in ws:
