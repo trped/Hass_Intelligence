@@ -1,9 +1,11 @@
 """Entity and Device Registry loader for HA Intelligence.
 
-Fetches entity and device registries from HA REST API at startup,
+Fetches entity and device registries from HA WebSocket API at startup,
 builds entity_id -> area_id mappings, and stays updated via events.
 """
 
+import asyncio
+import json
 import logging
 import os
 from typing import Optional
@@ -124,10 +126,52 @@ class Registry:
         return DOMAIN_RELEVANCE.get(domain, 'low')
 
     async def load_all(self):
-        """Fetch entity and device registries from HA."""
+        """Fetch entity and device registries from HA via WebSocket."""
         logger.info("Loading entity and device registries...")
-        await self._load_entity_registry()
-        await self._load_device_registry()
+        ws_url = self.ha_url.replace('http', 'ws') + '/websocket'
+
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.ws_connect(ws_url) as ws:
+                    # Authenticate
+                    msg = await ws.receive_json()
+                    if msg.get('type') != 'auth_required':
+                        logger.error(f"WS: unexpected initial message: {msg}")
+                        return
+                    await ws.send_json({
+                        'type': 'auth',
+                        'access_token': self.token
+                    })
+                    msg = await ws.receive_json()
+                    if msg.get('type') != 'auth_ok':
+                        logger.error(f"WS: auth failed: {msg}")
+                        return
+
+                    # Fetch entity registry
+                    await ws.send_json({
+                        'id': 1,
+                        'type': 'config/entity_registry/list'
+                    })
+                    msg = await ws.receive_json()
+                    if msg.get('success'):
+                        self._parse_entity_registry(msg.get('result', []))
+                    else:
+                        logger.error(f"Entity registry fetch failed: {msg}")
+
+                    # Fetch device registry
+                    await ws.send_json({
+                        'id': 2,
+                        'type': 'config/device_registry/list'
+                    })
+                    msg = await ws.receive_json()
+                    if msg.get('success'):
+                        self._parse_device_registry(msg.get('result', []))
+                    else:
+                        logger.error(f"Device registry fetch failed: {msg}")
+
+        except Exception as e:
+            logger.error(f"Registry load error: {e}")
+
         self._build_area_map()
         self._update_db()
         logger.info(
@@ -136,62 +180,42 @@ class Registry:
             f"{self.mapped_count} with area_id"
         )
 
-    async def _load_entity_registry(self):
-        """Fetch entity registry via REST API."""
-        try:
-            async with aiohttp.ClientSession() as session:
-                url = f"{self.ha_url}/api/config/entity_registry/list"
-                async with session.post(url, headers=self.headers, json={}) as resp:
-                    if resp.status == 200:
-                        entities = await resp.json()
-                        for ent in entities:
-                            eid = ent.get('entity_id', '')
-                            if not eid:
-                                continue
-                            self._entities[eid] = {
-                                'area_id': ent.get('area_id'),
-                                'device_id': ent.get('device_id'),
-                                'device_class': (
-                                    ent.get('device_class')
-                                    or ent.get('original_device_class')
-                                ),
-                                'platform': ent.get('platform'),
-                                'labels': ent.get('labels', []),
-                                'disabled_by': ent.get('disabled_by'),
-                                'hidden_by': ent.get('hidden_by'),
-                                'name': ent.get('name') or ent.get('original_name'),
-                            }
-                        logger.info(f"Entity registry: {len(self._entities)} entities")
-                    else:
-                        logger.error(f"Entity registry fetch failed: {resp.status}")
-        except Exception as e:
-            logger.error(f"Entity registry error: {e}")
+    def _parse_entity_registry(self, entities: list):
+        """Parse entity registry response."""
+        for ent in entities:
+            eid = ent.get('entity_id', '')
+            if not eid:
+                continue
+            self._entities[eid] = {
+                'area_id': ent.get('area_id'),
+                'device_id': ent.get('device_id'),
+                'device_class': (
+                    ent.get('device_class')
+                    or ent.get('original_device_class')
+                ),
+                'platform': ent.get('platform'),
+                'labels': ent.get('labels', []),
+                'disabled_by': ent.get('disabled_by'),
+                'hidden_by': ent.get('hidden_by'),
+                'name': ent.get('name') or ent.get('original_name'),
+            }
+        logger.info(f"Entity registry: {len(self._entities)} entities")
 
-    async def _load_device_registry(self):
-        """Fetch device registry via REST API."""
-        try:
-            async with aiohttp.ClientSession() as session:
-                url = f"{self.ha_url}/api/config/device_registry/list"
-                async with session.post(url, headers=self.headers, json={}) as resp:
-                    if resp.status == 200:
-                        devices = await resp.json()
-                        for dev in devices:
-                            did = dev.get('id', '')
-                            if not did:
-                                continue
-                            self._devices[did] = {
-                                'area_id': dev.get('area_id'),
-                                'manufacturer': dev.get('manufacturer'),
-                                'model': dev.get('model'),
-                                'name': dev.get('name_by_user') or dev.get('name'),
-                                'labels': dev.get('labels', []),
-                                'disabled_by': dev.get('disabled_by'),
-                            }
-                        logger.info(f"Device registry: {len(self._devices)} devices")
-                    else:
-                        logger.error(f"Device registry fetch failed: {resp.status}")
-        except Exception as e:
-            logger.error(f"Device registry error: {e}")
+    def _parse_device_registry(self, devices: list):
+        """Parse device registry response."""
+        for dev in devices:
+            did = dev.get('id', '')
+            if not did:
+                continue
+            self._devices[did] = {
+                'area_id': dev.get('area_id'),
+                'manufacturer': dev.get('manufacturer'),
+                'model': dev.get('model'),
+                'name': dev.get('name_by_user') or dev.get('name'),
+                'labels': dev.get('labels', []),
+                'disabled_by': dev.get('disabled_by'),
+            }
+        logger.info(f"Device registry: {len(self._devices)} devices")
 
     def _build_area_map(self):
         """Build entity_id -> area_id mapping with device fallback."""

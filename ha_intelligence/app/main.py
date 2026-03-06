@@ -35,12 +35,15 @@ def resolve_supervisor_token() -> str:
     return ''
 
 async def discover_mqtt(token: str) -> dict | None:
-    """Auto-discover MQTT broker via Supervisor services API."""
-    url = 'http://supervisor/services/mqtt'
+    """Auto-discover MQTT broker via Supervisor services API or add-on detection."""
     headers = {'Authorization': f'Bearer {token}'}
+
+    # 1) Try Supervisor MQTT service (works for Mosquitto with service registration)
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.get(url, headers=headers) as resp:
+            async with session.get(
+                'http://supervisor/services/mqtt', headers=headers
+            ) as resp:
                 if resp.status == 200:
                     data = (await resp.json()).get('data', {})
                     if data.get('host'):
@@ -51,7 +54,40 @@ async def discover_mqtt(token: str) -> dict | None:
                             'password': data.get('password'),
                         }
     except Exception as e:
-        logger.warning(f"MQTT auto-discovery failed: {e}")
+        logger.debug(f"Supervisor MQTT service check failed: {e}")
+
+    # 2) Fallback: detect known MQTT add-ons (EMQX, Mosquitto)
+    mqtt_addons = [
+        ('a0d7b954_emqx', 'EMQX'),
+        ('core_mosquitto', 'Mosquitto'),
+    ]
+    try:
+        async with aiohttp.ClientSession() as session:
+            for slug, name in mqtt_addons:
+                try:
+                    async with session.get(
+                        f'http://supervisor/addons/{slug}/info', headers=headers
+                    ) as resp:
+                        if resp.status != 200:
+                            continue
+                        info = (await resp.json()).get('data', {})
+                        if info.get('state') != 'started':
+                            continue
+                        # Use hostname or IP from add-on info
+                        host = info.get('hostname') or info.get('ip_address')
+                        if host:
+                            logger.info(f"MQTT broker detected: {name} at {host}")
+                            return {
+                                'host': host,
+                                'port': 1883,
+                                'username': None,
+                                'password': None,
+                            }
+                except Exception:
+                    continue
+    except Exception as e:
+        logger.warning(f"MQTT add-on detection failed: {e}")
+
     return None
 
 
@@ -278,6 +314,10 @@ async def main():
                 mqtt_user = discovered['username']
                 mqtt_pass = discovered.get('password')
             logger.info(f"MQTT auto-discovered: {mqtt_host}:{mqtt_port}")
+        else:
+            logger.warning(
+                f"MQTT auto-discovery failed, using config: {mqtt_host}:{mqtt_port}"
+            )
 
     mqtt = MQTTPublisher(
         host=mqtt_host, port=mqtt_port,
