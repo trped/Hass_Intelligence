@@ -164,30 +164,175 @@ class FeatureExtractor:
 
     # ── Context from registry ────────────────────────────────────
 
-    def update_context_state(self, entity_id: str, state: str):
-        """Track light/media states for room context features."""
-        domain = entity_id.split('.')[0] if '.' in entity_id else ''
-        if domain in ('light', 'media_player'):
-            self._context_states[entity_id] = state
+    def update_context_state(self, entity_id: str, state: str,
+                              attributes: dict = None):
+        """Track entity states and attributes for room context features."""
+        if state in ('unavailable', 'unknown'):
+            return
+        self._context_states[entity_id] = {
+            'state': state,
+            'attributes': attributes or {},
+        }
 
     def _get_room_context(self, area_id: str) -> dict:
-        """Get context features for a room from tracked states."""
-        has_light_on = 0
-        has_media_playing = 0
+        """Get comprehensive context features for a room from all area entities.
 
-        if self.registry:
-            entities = self.registry.get_entities_in_area(area_id)
-            for eid in entities:
-                state = self._context_states.get(eid)
-                if not state:
-                    continue
-                domain = eid.split('.')[0]
-                if domain == 'light' and state == 'on':
-                    has_light_on = 1
-                elif domain == 'media_player' and state in ('playing', 'on'):
-                    has_media_playing = 1
+        Aggregates features by domain: lights (brightness, color_temp),
+        sensors (by device_class), climate, media, switches, covers, etc.
+        """
+        features = {}
 
-        return {
-            'has_light_on': has_light_on,
-            'has_media_playing': has_media_playing,
-        }
+        if not self.registry:
+            return features
+
+        entities = self.registry.get_entities_in_area(area_id)
+
+        # Collectors per domain
+        lights = []
+        media_players = []
+        sensor_values = defaultdict(list)  # device_class -> [float]
+        climate_entities = []
+        switches_on = 0
+        switches_total = 0
+        covers_open = 0
+        covers_total = 0
+        fans_on = 0
+        fans_total = 0
+        binary_on = defaultdict(int)   # device_class -> count on
+        binary_total = defaultdict(int)  # device_class -> count total
+
+        for eid in entities:
+            ctx = self._context_states.get(eid)
+            if not ctx:
+                continue
+
+            domain = eid.split('.')[0]
+            state = ctx['state']
+            attrs = ctx.get('attributes', {})
+
+            if domain == 'light':
+                is_on = 1 if state == 'on' else 0
+                lights.append({
+                    'is_on': is_on,
+                    'brightness': attrs.get('brightness'),
+                    'color_temp': attrs.get('color_temp'),
+                    'color_temp_kelvin': attrs.get('color_temp_kelvin'),
+                })
+
+            elif domain == 'media_player':
+                is_playing = 1 if state == 'playing' else 0
+                is_active = 1 if state in ('playing', 'paused', 'on', 'idle') else 0
+                media_players.append({
+                    'is_active': is_active,
+                    'is_playing': is_playing,
+                    'volume': attrs.get('volume_level'),
+                })
+
+            elif domain == 'sensor':
+                try:
+                    value = float(state)
+                    dc = attrs.get('device_class', 'generic')
+                    sensor_values[dc].append(value)
+                except (ValueError, TypeError):
+                    pass
+
+            elif domain == 'climate':
+                climate_entities.append({
+                    'current_temp': attrs.get('current_temperature'),
+                    'target_temp': attrs.get('temperature'),
+                    'humidity': attrs.get('current_humidity'),
+                    'hvac_on': 1 if state not in ('off', 'idle', 'unavailable') else 0,
+                })
+
+            elif domain == 'switch':
+                switches_total += 1
+                if state == 'on':
+                    switches_on += 1
+
+            elif domain == 'cover':
+                covers_total += 1
+                if state == 'open':
+                    covers_open += 1
+
+            elif domain == 'fan':
+                fans_total += 1
+                if state == 'on':
+                    fans_on += 1
+
+            elif domain == 'binary_sensor':
+                dc = attrs.get('device_class', 'generic')
+                binary_total[dc] += 1
+                if state == 'on':
+                    binary_on[dc] += 1
+
+        # ── Aggregate features ──
+
+        # Lights
+        if lights:
+            features['lights_count'] = len(lights)
+            features['lights_on'] = sum(l['is_on'] for l in lights)
+            features['lights_on_ratio'] = features['lights_on'] / len(lights)
+            bright = [l['brightness'] for l in lights
+                      if l['is_on'] and l['brightness'] is not None]
+            if bright:
+                features['avg_brightness'] = sum(bright) / len(bright) / 255.0
+            ct = [l['color_temp_kelvin'] for l in lights
+                  if l['is_on'] and l['color_temp_kelvin'] is not None]
+            if ct:
+                features['avg_color_temp_k'] = sum(ct) / len(ct)
+
+        # Media players
+        if media_players:
+            features['media_count'] = len(media_players)
+            features['media_active'] = sum(m['is_active'] for m in media_players)
+            features['media_playing'] = sum(m['is_playing'] for m in media_players)
+            vols = [m['volume'] for m in media_players if m['volume'] is not None]
+            if vols:
+                features['avg_volume'] = sum(vols) / len(vols)
+
+        # Sensors by device_class (temperature, humidity, power, illuminance, etc.)
+        for dc, vals in sensor_values.items():
+            prefix = f'sensor_{dc}'
+            features[f'{prefix}_avg'] = sum(vals) / len(vals)
+            if len(vals) > 1:
+                features[f'{prefix}_min'] = min(vals)
+                features[f'{prefix}_max'] = max(vals)
+
+        # Climate
+        if climate_entities:
+            features['climate_on'] = sum(c['hvac_on'] for c in climate_entities)
+            temps = [c['current_temp'] for c in climate_entities
+                     if c['current_temp'] is not None]
+            if temps:
+                features['climate_temp'] = sum(temps) / len(temps)
+            targets = [c['target_temp'] for c in climate_entities
+                       if c['target_temp'] is not None]
+            if targets:
+                features['climate_target'] = sum(targets) / len(targets)
+            hums = [c['humidity'] for c in climate_entities
+                    if c['humidity'] is not None]
+            if hums:
+                features['climate_humidity'] = sum(hums) / len(hums)
+
+        # Switches
+        if switches_total:
+            features['switches_total'] = switches_total
+            features['switches_on'] = switches_on
+
+        # Covers
+        if covers_total:
+            features['covers_total'] = covers_total
+            features['covers_open'] = covers_open
+
+        # Fans
+        if fans_total:
+            features['fans_total'] = fans_total
+            features['fans_on'] = fans_on
+
+        # Binary sensors by device_class
+        for dc in binary_total:
+            prefix = f'bs_{dc}'
+            features[f'{prefix}_total'] = binary_total[dc]
+            features[f'{prefix}_on'] = binary_on[dc]
+
+        return features

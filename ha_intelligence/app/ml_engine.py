@@ -39,9 +39,8 @@ class MLEngine:
         """
         domain = entity_id.split('.')[0]
 
-        # Track light/media context for room features
-        if domain in ('light', 'media_player'):
-            self.features.update_context_state(entity_id, new_state)
+        # Track ALL entity states + attributes for room context features
+        self.features.update_context_state(entity_id, new_state, attributes)
 
         # Motion events → train room model
         if domain == 'binary_sensor' and any(
