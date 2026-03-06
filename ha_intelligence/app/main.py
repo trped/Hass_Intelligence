@@ -80,6 +80,7 @@ class SensorEngine:
         self._tracker_to_person = {}  # device_tracker entity_id -> person entity_id
         self._publish_interval = 60  # seconds
         self._stale_threshold = timedelta(minutes=30)
+        self._last_predictions = {}  # sensor_target -> prediction_id (for feedback loop)
 
     async def on_state_change(self, entity_id: str, old_state: str,
                                new_state: str, attributes: dict):
@@ -107,10 +108,14 @@ class SensorEngine:
                 area_id = attributes.get('area_id')
             if area_id:
                 self._update_room_state(area_id, entity_id, new_state)
+                # Feedback loop: close prediction with actual state
+                self._close_room_feedback(area_id, new_state)
 
         # Track person entities → person state
         if domain == 'person':
             self._update_person_state(entity_id, new_state, attributes)
+            # Feedback loop: close prediction with actual state
+            self._close_person_feedback(entity_id, new_state)
 
         # Track device_tracker → person state
         if domain == 'device_tracker':
@@ -176,6 +181,48 @@ class SensorEngine:
         for area_id in stale_rooms:
             self._room_states[area_id]['sensors'] = {}
             logger.debug(f"Cleared stale sensors for room {area_id}")
+
+    def _close_room_feedback(self, area_id: str, sensor_state: str):
+        """Close feedback loop for room prediction when actual state observed."""
+        actual = 'occupied' if sensor_state == 'on' else 'empty'
+        target = f'room_{area_id}'
+        pred_id = self._last_predictions.get(target)
+        if pred_id:
+            try:
+                self.db.update_prediction_feedback(pred_id, actual, 'auto_sensor')
+            except Exception as e:
+                logger.debug(f"Feedback error for {target}: {e}")
+
+    def _close_person_feedback(self, entity_id: str, ha_state: str):
+        """Close feedback loop for person prediction when actual state observed."""
+        if ha_state == 'home':
+            actual = 'active'
+        elif ha_state == 'not_home':
+            actual = 'away'
+        else:
+            actual = ha_state
+        target = f'person_{entity_id}'
+        pred_id = self._last_predictions.get(target)
+        if pred_id:
+            try:
+                self.db.update_prediction_feedback(pred_id, actual, 'auto_state')
+            except Exception as e:
+                logger.debug(f"Feedback error for {target}: {e}")
+
+    def _store_prediction(self, target: str, state: str, confidence: float,
+                          method: str):
+        """Store a prediction and track its ID for feedback."""
+        try:
+            pred_id = self.db.insert_prediction(
+                sensor_target=target,
+                predicted_state=state,
+                confidence=confidence,
+                method=method,
+            )
+            if pred_id:
+                self._last_predictions[target] = pred_id
+        except Exception as e:
+            logger.debug(f"Store prediction error for {target}: {e}")
 
     async def periodic_publish(self):
         """Periodically publish sensor states to MQTT."""
@@ -243,6 +290,14 @@ class SensorEngine:
                 state = rule_state
                 confidence = rule_confidence
 
+            # Store prediction for feedback loop
+            self._store_prediction(
+                target=f'room_{area_id}',
+                state=state,
+                confidence=confidence,
+                method=source,
+            )
+
             self.mqtt.publish_room(
                 slug=room['slug'],
                 name=room['name'],
@@ -308,6 +363,14 @@ class SensorEngine:
                 state = rule_state
                 confidence = rule_confidence
 
+            # Store prediction for feedback loop
+            self._store_prediction(
+                target=f'person_{entity_id}',
+                state=state,
+                confidence=confidence,
+                method=source,
+            )
+
             self.mqtt.publish_person(
                 slug=person['slug'],
                 name=person['name'],
@@ -356,11 +419,22 @@ class SensorEngine:
                 'ml_threshold': ml_stats.get('ml_threshold', 50),
             }
 
+        # Prediction accuracy stats
+        try:
+            accuracy = self.db.get_prediction_accuracy()
+            ml_info['accuracy_total'] = accuracy.get('total', 0)
+            ml_info['accuracy_correct'] = accuracy.get('correct', 0)
+            ml_info['accuracy_pct'] = round(accuracy.get('accuracy', 0.0) * 100, 1)
+        except Exception:
+            ml_info['accuracy_total'] = 0
+            ml_info['accuracy_correct'] = 0
+            ml_info['accuracy_pct'] = 0.0
+
         status = 'ml_active' if ml_info['ml_active'] else 'learning'
         self.mqtt.publish_system_status(
             status=status,
             attributes={
-                'version': '0.3.2',
+                'version': '0.3.3',
                 'events_24h': stats['events_24h'],
                 'events_total': stats['events_total'],
                 'entities_discovered': stats['entities_discovered'],
@@ -456,7 +530,7 @@ class SensorEngine:
 
 async def main():
     logger.info("=" * 50)
-    logger.info("HA Intelligence v0.3.1 starting...")
+    logger.info("HA Intelligence v0.3.3 starting...")
     logger.info("=" * 50)
 
     # Load config

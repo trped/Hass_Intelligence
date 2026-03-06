@@ -92,7 +92,7 @@ def create_app(db, event_listener, mqtt_pub, registry=None, ml_engine=None) -> F
     async def health():
         return {
             "status": "ok",
-            "version": "0.3.2",
+            "version": "0.3.3",
             "ws_connected": event_listener.connected,
             "mqtt_connected": mqtt_pub.connected,
             "registry_loaded": registry is not None and registry.entity_count > 0,
@@ -101,10 +101,16 @@ def create_app(db, event_listener, mqtt_pub, registry=None, ml_engine=None) -> F
 
     @app.get("/api/ml/stats")
     async def ml_stats():
-        """Get ML engine statistics."""
+        """Get ML engine statistics including prediction accuracy."""
         if not ml_engine:
             return {'error': 'ML engine not initialized', 'ml_active': False}
         stats = ml_engine.get_stats()
+        # Add prediction accuracy from DB
+        try:
+            accuracy = db.get_prediction_accuracy()
+            stats['accuracy'] = accuracy
+        except Exception:
+            stats['accuracy'] = {'total': 0, 'correct': 0, 'accuracy_pct': 0.0}
         return stats
 
     @app.get("/api/ml/models")
@@ -214,7 +220,7 @@ def get_dashboard_html() -> str:
 
 <h1>
   <span class="icon">&#129504;</span> HA Intelligence
-  <span class="version">v0.3.2</span>
+  <span class="version">v0.3.3</span>
   <span style="flex:1"></span>
   <button class="refresh-btn" onclick="loadAll()">Opdater</button>
 </h1>
@@ -360,12 +366,20 @@ async function loadML() {
     const statusBadge = active
       ? '<span class="badge green">Aktiv</span>'
       : '<span class="badge orange">Laerer</span>';
+    const acc = ml.accuracy || {};
+    const accPct = ((acc.accuracy || 0) * 100).toFixed(1);
+    const accTotal = acc.total || 0;
+    const accCorrect = acc.correct || 0;
+    const accBadge = accTotal > 0
+      ? `<span class="badge ${accPct >= 70 ? 'green' : accPct >= 40 ? 'orange' : ''}">${accPct}%</span>`
+      : '<span class="badge">-</span>';
     el.innerHTML = `
       <p>${statusBadge} ${ml.total_samples || 0} samples (threshold: ${ml.ml_threshold || 50})</p>
       <div class="mini-stat" style="margin-top:8px">
         <div class="item"><span class="val">${ml.room_models || 0}</span> <span class="lbl">rum-modeller</span></div>
         <div class="item"><span class="val">${ml.person_models || 0}</span> <span class="lbl">person-modeller</span></div>
       </div>
+      <p style="margin-top:10px">Accuracy: ${accBadge} <span style="font-size:12px;color:var(--text-dim)">${accCorrect}/${accTotal} predictions</span></p>
       ${(models.room_models||[]).length ? '<p style="margin-top:8px;font-size:12px;color:var(--text-dim)">Rum: ' +
         models.room_models.map(m => m.area_id + ' (' + m.samples_seen + ')').join(', ') + '</p>' : ''}
       ${(models.person_models||[]).length ? '<p style="margin-top:4px;font-size:12px;color:var(--text-dim)">Person: ' +

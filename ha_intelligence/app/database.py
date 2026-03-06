@@ -328,14 +328,36 @@ class Database:
     # ── Predictions ─────────────────────────────────────────────
 
     def insert_prediction(self, sensor_target: str, predicted_state: str,
-                          confidence: float, method: str, features: dict = None):
-        self.execute(
-            """INSERT INTO predictions
-               (sensor_target, predicted_state, confidence, method, features)
-               VALUES (?, ?, ?, ?, ?)""",
-            (sensor_target, predicted_state, confidence, method,
-             json.dumps(features or {}))
+                          confidence: float, method: str, features: dict = None) -> int:
+        """Insert prediction and return its row ID for feedback tracking."""
+        conn = self._connect()
+        try:
+            cur = conn.execute(
+                """INSERT INTO predictions
+                   (sensor_target, predicted_state, confidence, method, features)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (sensor_target, predicted_state, confidence, method,
+                 json.dumps(features or {}))
+            )
+            conn.commit()
+            return cur.lastrowid
+        except Exception as e:
+            conn.rollback()
+            logger.error(f"insert_prediction error: {e}")
+            return 0
+        finally:
+            conn.close()
+
+    def get_latest_prediction(self, sensor_target: str) -> dict | None:
+        """Get the most recent unresolved prediction for a target."""
+        rows = self.execute(
+            """SELECT id, predicted_state, confidence, method
+               FROM predictions
+               WHERE sensor_target = ? AND was_correct IS NULL
+               ORDER BY predicted_at DESC LIMIT 1""",
+            (sensor_target,), fetch=True
         )
+        return rows[0] if rows else None
 
     def update_prediction_feedback(self, prediction_id: int, actual_state: str,
                                     feedback_source: str = 'auto'):
