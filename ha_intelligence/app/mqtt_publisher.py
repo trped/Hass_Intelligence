@@ -65,7 +65,7 @@ class MQTTPublisher:
                 "name": "HA Intelligence",
                 "manufacturer": "Hyggebo",
                 "model": "Intelligence System",
-                "sw_version": "0.1.9",
+                "sw_version": "0.3.0",
             },
         }
         if icon:
@@ -128,6 +128,26 @@ class MQTTPublisher:
             icon="mdi:brain"
         )
         self._publish_state('system', status, attributes)
+
+    # ── Time context sensor ──────────────────────────────────────
+
+    def publish_time_context(self, state: str, attributes: dict):
+        """Publish sensor.hai_time_context with time-of-day context."""
+        self._publish_discovery(
+            'sensor', 'time_context', 'HAI Time Context',
+            icon="mdi:clock-outline"
+        )
+        self._publish_state('time_context', state, attributes)
+
+    # ── Household sensor ─────────────────────────────────────────
+
+    def publish_household(self, state: str, attributes: dict):
+        """Publish sensor.hai_household with household mode."""
+        self._publish_discovery(
+            'sensor', 'household', 'HAI Household',
+            icon="mdi:home-account"
+        )
+        self._publish_state('household', state, attributes)
 
     def stop(self):
         self.client.loop_stop()

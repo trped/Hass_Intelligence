@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 INGRESS_PATH = os.environ.get('INGRESS_PATH', '')
 
 
-def create_app(db, event_listener, mqtt_pub, registry=None) -> FastAPI:
+def create_app(db, event_listener, mqtt_pub, registry=None, ml_engine=None) -> FastAPI:
     """Create FastAPI app with ingress support."""
 
     # Strip trailing slashes from ingress path to avoid double-slash issues
@@ -92,11 +92,49 @@ def create_app(db, event_listener, mqtt_pub, registry=None) -> FastAPI:
     async def health():
         return {
             "status": "ok",
-            "version": "0.2.0",
+            "version": "0.3.0",
             "ws_connected": event_listener.connected,
             "mqtt_connected": mqtt_pub.connected,
             "registry_loaded": registry is not None and registry.entity_count > 0,
+            "ml_active": ml_engine is not None and ml_engine.get_stats().get('ml_active', False),
         }
+
+    @app.get("/api/ml/stats")
+    async def ml_stats():
+        """Get ML engine statistics."""
+        if not ml_engine:
+            return {'error': 'ML engine not initialized', 'ml_active': False}
+        stats = ml_engine.get_stats()
+        return stats
+
+    @app.get("/api/ml/models")
+    async def ml_models():
+        """Get per-model details."""
+        if not ml_engine:
+            return {'room_models': [], 'person_models': []}
+        room_list = []
+        for area_id, model in ml_engine.models.room_models.items():
+            room_list.append({
+                'area_id': area_id,
+                'samples_seen': model.samples_seen,
+                'active': model.samples_seen >= 50,
+            })
+        person_list = []
+        for person_id, model in ml_engine.models.person_models.items():
+            person_list.append({
+                'person_id': person_id,
+                'samples_seen': model.samples_seen,
+                'active': model.samples_seen >= 50,
+            })
+        return {'room_models': room_list, 'person_models': person_list}
+
+    @app.get("/api/predictions/recent")
+    async def recent_predictions(limit: int = 20):
+        """Get recent predictions from DB."""
+        return db.execute(
+            "SELECT * FROM predictions ORDER BY id DESC LIMIT ?",
+            (limit,), fetch=True
+        )
 
     return app
 
@@ -176,7 +214,7 @@ def get_dashboard_html() -> str:
 
 <h1>
   <span class="icon">&#129504;</span> HA Intelligence
-  <span class="version">v0.2.0</span>
+  <span class="version">v0.3.0</span>
   <span style="flex:1"></span>
   <button class="refresh-btn" onclick="loadAll()">Opdater</button>
 </h1>
@@ -195,6 +233,10 @@ def get_dashboard_html() -> str:
     <div class="stat" id="events-count">-</div>
     <div class="stat-label">events indsamlet</div>
     <div id="event-types" class="mini-stat" style="margin-top:12px"></div>
+  </div>
+  <div class="card">
+    <h2>ML Status</h2>
+    <div id="ml-info">Indlaeser...</div>
   </div>
 </div>
 
@@ -309,8 +351,31 @@ async function loadEvents() {
   } catch(e) { console.error('Events error:', e); }
 }
 
+async function loadML() {
+  try {
+    const ml = await fetchJson('/api/ml/stats');
+    const models = await fetchJson('/api/ml/models');
+    const el = document.getElementById('ml-info');
+    const active = ml.ml_active;
+    const statusBadge = active
+      ? '<span class="badge green">Aktiv</span>'
+      : '<span class="badge orange">Laerer</span>';
+    el.innerHTML = `
+      <p>${statusBadge} ${ml.total_samples || 0} samples (threshold: ${ml.ml_threshold || 50})</p>
+      <div class="mini-stat" style="margin-top:8px">
+        <div class="item"><span class="val">${ml.room_models || 0}</span> <span class="lbl">rum-modeller</span></div>
+        <div class="item"><span class="val">${ml.person_models || 0}</span> <span class="lbl">person-modeller</span></div>
+      </div>
+      ${(models.room_models||[]).length ? '<p style="margin-top:8px;font-size:12px;color:var(--text-dim)">Rum: ' +
+        models.room_models.map(m => m.area_id + ' (' + m.samples_seen + ')').join(', ') + '</p>' : ''}
+      ${(models.person_models||[]).length ? '<p style="margin-top:4px;font-size:12px;color:var(--text-dim)">Person: ' +
+        models.person_models.map(m => m.person_id.replace('person.','') + ' (' + m.samples_seen + ')').join(', ') + '</p>' : ''}
+    `;
+  } catch(e) { console.error('ML error:', e); }
+}
+
 function loadAll() {
-  loadStats(); loadRooms(); loadPersons(); loadEvents();
+  loadStats(); loadRooms(); loadPersons(); loadEvents(); loadML();
 }
 
 loadAll();

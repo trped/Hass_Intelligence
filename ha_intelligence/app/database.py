@@ -4,12 +4,15 @@ import sqlite3
 import json
 import logging
 import os
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
 DB_PATH = "/data/ha_intelligence.db"
+MAX_RETRIES = 3
+RETRY_BACKOFF = 0.1  # seconds
 
 
 def get_db_path() -> str:
@@ -28,7 +31,7 @@ class Database:
         self._init_schema()
 
     def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.path)
+        conn = sqlite3.connect(self.path, timeout=10)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA foreign_keys=ON")
@@ -78,31 +81,54 @@ class Database:
                 logger.warning(f"Index creation skipped: {e}")
 
     def execute(self, query: str, params: tuple = (), fetch: bool = False):
-        conn = self._connect()
-        try:
-            cur = conn.execute(query, params)
-            conn.commit()
-            if fetch:
-                return [dict(row) for row in cur.fetchall()]
-            return cur.rowcount
-        except Exception as e:
-            conn.rollback()
-            logger.error(f"DB error: {e} | Query: {query[:100]}")
-            raise
-        finally:
-            conn.close()
+        """Execute query with retry on 'database is locked'."""
+        for attempt in range(MAX_RETRIES):
+            conn = self._connect()
+            try:
+                cur = conn.execute(query, params)
+                conn.commit()
+                if fetch:
+                    return [dict(row) for row in cur.fetchall()]
+                return cur.rowcount
+            except sqlite3.OperationalError as e:
+                conn.rollback()
+                if "database is locked" in str(e) and attempt < MAX_RETRIES - 1:
+                    wait = RETRY_BACKOFF * (2 ** attempt)
+                    logger.warning(f"DB locked, retry {attempt + 1}/{MAX_RETRIES} in {wait}s")
+                    time.sleep(wait)
+                    continue
+                logger.error(f"DB error: {e} | Query: {query[:100]}")
+                raise
+            except Exception as e:
+                conn.rollback()
+                logger.error(f"DB error: {e} | Query: {query[:100]}")
+                raise
+            finally:
+                conn.close()
 
     def execute_many(self, query: str, params_list: list):
-        conn = self._connect()
-        try:
-            conn.executemany(query, params_list)
-            conn.commit()
-        except Exception as e:
-            conn.rollback()
-            logger.error(f"DB executemany error: {e}")
-            raise
-        finally:
-            conn.close()
+        """Execute many with retry on 'database is locked'."""
+        for attempt in range(MAX_RETRIES):
+            conn = self._connect()
+            try:
+                conn.executemany(query, params_list)
+                conn.commit()
+                return
+            except sqlite3.OperationalError as e:
+                conn.rollback()
+                if "database is locked" in str(e) and attempt < MAX_RETRIES - 1:
+                    wait = RETRY_BACKOFF * (2 ** attempt)
+                    logger.warning(f"DB locked (many), retry {attempt + 1}/{MAX_RETRIES}")
+                    time.sleep(wait)
+                    continue
+                logger.error(f"DB executemany error: {e}")
+                raise
+            except Exception as e:
+                conn.rollback()
+                logger.error(f"DB executemany error: {e}")
+                raise
+            finally:
+                conn.close()
 
     # ── Events ──────────────────────────────────────────────────
 
@@ -252,6 +278,184 @@ class Database:
             (key, value)
         )
 
+    # ── Observations (ML feature vectors) ──────────────────────
+
+    def insert_observation(self, area_id: str = None, person_id: str = None,
+                           features: dict = None, label: str = None,
+                           model_type: str = 'room', weight: float = 1.0):
+        self.execute(
+            """INSERT INTO observations
+               (observed_at, area_id, person_id, features, label, model_type, weight)
+               VALUES (datetime('now'), ?, ?, ?, ?, ?, ?)""",
+            (area_id, person_id, json.dumps(features or {}), label, model_type, weight)
+        )
+
+    def get_recent_observations(self, model_type: str = None,
+                                 target_id: str = None,
+                                 hours: int = 24, limit: int = 500) -> list:
+        query = """SELECT * FROM observations
+                   WHERE observed_at > datetime('now', ?)"""
+        params = [f'-{hours} hours']
+        if model_type:
+            query += " AND model_type = ?"
+            params.append(model_type)
+        if target_id:
+            if model_type == 'person':
+                query += " AND person_id = ?"
+            else:
+                query += " AND area_id = ?"
+            params.append(target_id)
+        query += " ORDER BY observed_at DESC LIMIT ?"
+        params.append(limit)
+        return self.execute(query, tuple(params), fetch=True)
+
+    def get_observation_count(self, model_type: str = None,
+                               target_id: str = None) -> int:
+        query = "SELECT COUNT(*) as cnt FROM observations WHERE 1=1"
+        params = []
+        if model_type:
+            query += " AND model_type = ?"
+            params.append(model_type)
+        if target_id:
+            if model_type == 'person':
+                query += " AND person_id = ?"
+            else:
+                query += " AND area_id = ?"
+            params.append(target_id)
+        rows = self.execute(query, tuple(params), fetch=True)
+        return rows[0]['cnt'] if rows else 0
+
+    # ── Predictions ─────────────────────────────────────────────
+
+    def insert_prediction(self, sensor_target: str, predicted_state: str,
+                          confidence: float, method: str, features: dict = None):
+        self.execute(
+            """INSERT INTO predictions
+               (sensor_target, predicted_state, confidence, method, features)
+               VALUES (?, ?, ?, ?, ?)""",
+            (sensor_target, predicted_state, confidence, method,
+             json.dumps(features or {}))
+        )
+
+    def update_prediction_feedback(self, prediction_id: int, actual_state: str,
+                                    feedback_source: str = 'auto'):
+        was_correct = None
+        # Look up predicted_state to compare
+        rows = self.execute(
+            "SELECT predicted_state FROM predictions WHERE id = ?",
+            (prediction_id,), fetch=True
+        )
+        if rows:
+            was_correct = 1 if rows[0]['predicted_state'] == actual_state else 0
+        self.execute(
+            """UPDATE predictions SET
+               actual_state = ?, was_correct = ?,
+               feedback_source = ?, feedback_at = datetime('now')
+               WHERE id = ?""",
+            (actual_state, was_correct, feedback_source, prediction_id)
+        )
+
+    def get_recent_predictions(self, limit: int = 50) -> list:
+        return self.execute(
+            """SELECT * FROM predictions
+               ORDER BY predicted_at DESC LIMIT ?""",
+            (limit,), fetch=True
+        )
+
+    def get_prediction_accuracy(self, method: str = None, hours: int = 24) -> dict:
+        query = """SELECT
+                     COUNT(*) as total,
+                     SUM(CASE WHEN was_correct = 1 THEN 1 ELSE 0 END) as correct,
+                     SUM(CASE WHEN was_correct = 0 THEN 1 ELSE 0 END) as incorrect,
+                     SUM(CASE WHEN was_correct IS NULL THEN 1 ELSE 0 END) as pending
+                   FROM predictions
+                   WHERE predicted_at > datetime('now', ?)"""
+        params = [f'-{hours} hours']
+        if method:
+            query += " AND method = ?"
+            params.append(method)
+        rows = self.execute(query, tuple(params), fetch=True)
+        if not rows or rows[0]['total'] == 0:
+            return {'total': 0, 'accuracy': 0.0, 'correct': 0, 'incorrect': 0, 'pending': 0}
+        r = rows[0]
+        evaluated = r['correct'] + r['incorrect']
+        accuracy = r['correct'] / evaluated if evaluated > 0 else 0.0
+        return {
+            'total': r['total'], 'accuracy': round(accuracy, 3),
+            'correct': r['correct'], 'incorrect': r['incorrect'], 'pending': r['pending'],
+        }
+
+    # ── Model Versions ──────────────────────────────────────────
+
+    def upsert_model_version(self, model_name: str, version: int,
+                              accuracy: float = 0.0, samples_seen: int = 0):
+        self.execute(
+            """INSERT INTO model_versions (model_name, version, accuracy, samples_seen)
+               VALUES (?, ?, ?, ?)
+               ON CONFLICT(model_name) DO UPDATE SET
+                 version = excluded.version,
+                 accuracy = excluded.accuracy,
+                 samples_seen = excluded.samples_seen,
+                 updated_at = datetime('now')""",
+            (model_name, version, accuracy, samples_seen)
+        )
+
+    def get_model_versions(self) -> list:
+        return self.execute(
+            "SELECT * FROM model_versions ORDER BY model_name", fetch=True
+        )
+
+    def get_model_version(self, model_name: str) -> dict | None:
+        rows = self.execute(
+            "SELECT * FROM model_versions WHERE model_name = ?",
+            (model_name,), fetch=True
+        )
+        return rows[0] if rows else None
+
+    # ── State Priors ────────────────────────────────────────────
+
+    def upsert_state_prior(self, target_type: str, target_id: str,
+                            hour: int, weekday: int,
+                            state: str, probability: float):
+        self.execute(
+            """INSERT INTO state_priors
+               (target_type, target_id, hour, weekday, state, probability)
+               VALUES (?, ?, ?, ?, ?, ?)
+               ON CONFLICT(target_type, target_id, hour, weekday, state) DO UPDATE SET
+                 probability = excluded.probability,
+                 updated_at = datetime('now')""",
+            (target_type, target_id, hour, weekday, state, probability)
+        )
+
+    def get_state_prior(self, target_type: str, target_id: str,
+                         hour: int, weekday: int) -> list:
+        return self.execute(
+            """SELECT state, probability FROM state_priors
+               WHERE target_type = ? AND target_id = ? AND hour = ? AND weekday = ?
+               ORDER BY probability DESC""",
+            (target_type, target_id, hour, weekday), fetch=True
+        )
+
+    # ── Pruning ─────────────────────────────────────────────────
+
+    def prune_old_events(self, days: int = 30) -> int:
+        return self.execute(
+            "DELETE FROM events WHERE recorded_at < datetime('now', ?)",
+            (f'-{days} days',)
+        )
+
+    def prune_old_observations(self, days: int = 14) -> int:
+        return self.execute(
+            "DELETE FROM observations WHERE observed_at < datetime('now', ?)",
+            (f'-{days} days',)
+        )
+
+    def prune_old_predictions(self, days: int = 7) -> int:
+        return self.execute(
+            "DELETE FROM predictions WHERE predicted_at < datetime('now', ?)",
+            (f'-{days} days',)
+        )
+
     # ── Stats ───────────────────────────────────────────────────
 
     def get_stats(self) -> dict:
@@ -268,12 +472,16 @@ class Database:
         persons = self.execute(
             "SELECT COUNT(*) as cnt FROM persons", fetch=True
         )[0]['cnt']
+        observations = self.execute(
+            "SELECT COUNT(*) as cnt FROM observations", fetch=True
+        )[0]['cnt']
         return {
             'events_24h': events_24h,
             'events_total': events_total,
             'entities_discovered': entities,
             'rooms': rooms,
             'persons': persons,
+            'observations_total': observations,
         }
 
 
@@ -332,6 +540,42 @@ CREATE TABLE IF NOT EXISTS predictions (
 );
 CREATE INDEX IF NOT EXISTS idx_pred_time ON predictions(predicted_at);
 
+CREATE TABLE IF NOT EXISTS observations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    observed_at TEXT DEFAULT (datetime('now')),
+    area_id TEXT,
+    person_id TEXT,
+    features TEXT DEFAULT '{}',
+    label TEXT,
+    model_type TEXT NOT NULL DEFAULT 'room',
+    weight REAL DEFAULT 1.0
+);
+CREATE INDEX IF NOT EXISTS idx_obs_time ON observations(observed_at);
+CREATE INDEX IF NOT EXISTS idx_obs_area ON observations(area_id);
+CREATE INDEX IF NOT EXISTS idx_obs_person ON observations(person_id);
+CREATE INDEX IF NOT EXISTS idx_obs_type ON observations(model_type);
+
+CREATE TABLE IF NOT EXISTS model_versions (
+    model_name TEXT PRIMARY KEY,
+    version INTEGER DEFAULT 1,
+    accuracy REAL DEFAULT 0.0,
+    samples_seen INTEGER DEFAULT 0,
+    updated_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS state_priors (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    target_type TEXT NOT NULL,
+    target_id TEXT NOT NULL,
+    hour INTEGER NOT NULL,
+    weekday INTEGER NOT NULL,
+    state TEXT NOT NULL,
+    probability REAL NOT NULL,
+    updated_at TEXT DEFAULT (datetime('now')),
+    UNIQUE(target_type, target_id, hour, weekday, state)
+);
+CREATE INDEX IF NOT EXISTS idx_priors_lookup ON state_priors(target_type, target_id, hour, weekday);
+
 CREATE TABLE IF NOT EXISTS system_config (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL,
@@ -340,7 +584,7 @@ CREATE TABLE IF NOT EXISTS system_config (
 
 -- Default config
 INSERT OR IGNORE INTO system_config (key, value) VALUES
-    ('version', '0.2.0'),
+    ('version', '0.3.0'),
     ('started_at', datetime('now')),
     ('confidence_threshold', '0.4');
 """
