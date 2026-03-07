@@ -129,16 +129,6 @@ class MQTTPublisher:
         )
         self._publish_state('system', status, attributes)
 
-    # ── Time context sensor ──────────────────────────────────────
-
-    def publish_time_context(self, state: str, attributes: dict):
-        """Publish sensor.hai_time_context with time-of-day context."""
-        self._publish_discovery(
-            'sensor', 'time_context', 'HAI Time Context',
-            icon="mdi:clock-outline"
-        )
-        self._publish_state('time_context', state, attributes)
-
     # ── Household sensor ─────────────────────────────────────────
 
     def publish_household(self, state: str, attributes: dict):
@@ -148,16 +138,6 @@ class MQTTPublisher:
             icon="mdi:home-account"
         )
         self._publish_state('household', state, attributes)
-
-    # ── Summary sensor (Haiku) ────────────────────────────────────
-
-    def publish_summary(self, state: str, attributes: dict):
-        """Publish sensor.hai_summary with natural language household summary."""
-        self._publish_discovery(
-            'sensor', 'summary', 'HAI Summary',
-            icon="mdi:text-box-outline"
-        )
-        self._publish_state('summary', state, attributes)
 
     def stop(self):
         self.client.loop_stop()
