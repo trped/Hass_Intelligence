@@ -6,3 +6,4 @@ jinja2==3.1.6
 river==0.23.0
 joblib==1.4.2
 numpy==2.2.3
+anthropic==0.49.0

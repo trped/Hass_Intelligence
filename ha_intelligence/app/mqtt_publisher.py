@@ -65,7 +65,7 @@ class MQTTPublisher:
                 "name": "HA Intelligence",
                 "manufacturer": "Hyggebo",
                 "model": "Intelligence System",
-                "sw_version": "0.5.0",
+                "sw_version": "0.6.0",
             },
         }
         if icon:
@@ -148,6 +148,16 @@ class MQTTPublisher:
             icon="mdi:home-account"
         )
         self._publish_state('household', state, attributes)
+
+    # ── Summary sensor (Haiku) ────────────────────────────────────
+
+    def publish_summary(self, state: str, attributes: dict):
+        """Publish sensor.hai_summary with natural language household summary."""
+        self._publish_discovery(
+            'sensor', 'summary', 'HAI Summary',
+            icon="mdi:text-box-outline"
+        )
+        self._publish_state('summary', state, attributes)
 
     def stop(self):
         self.client.loop_stop()
