@@ -139,6 +139,41 @@ class MQTTPublisher:
         )
         self._publish_state('household', state, attributes)
 
+    def remove_sensor(self, object_id: str):
+        """Remove a sensor from HA by publishing empty config."""
+        unique_id = f"hai_{object_id}"
+        topic = f"{DISCOVERY_PREFIX}/sensor/{unique_id}/config"
+        self.client.publish(topic, "", retain=True)
+        logger.info(f"Removed sensor: {unique_id}")
+
+    # ── Activity sensors ───────────────────────────────────────
+
+    def publish_activity(self, person_slug: str, person_name: str,
+                         state: str, attributes: dict):
+        """Publish sensor.hai_activity_[person] with current activity."""
+        object_id = f"activity_{person_slug}"
+        self._publish_discovery(
+            'sensor', object_id, f"HAI Aktivitet {person_name}",
+            icon="mdi:run"
+        )
+        self._publish_state(object_id, state, attributes)
+
+    # ── Feedback sensor ────────────────────────────────────────
+
+    def publish_feedback_status(self, state: str, attributes: dict):
+        """Publish sensor.hai_feedback with feedback system status."""
+        self._publish_discovery(
+            'sensor', 'feedback', 'HAI Feedback',
+            icon="mdi:comment-question-outline"
+        )
+        self._publish_state('feedback', state, attributes)
+
+    def subscribe_feedback(self, callback):
+        """Subscribe to hai/feedback/# for user answers."""
+        self.client.subscribe("hai/feedback/#")
+        self.client.on_message = callback
+        logger.info("Subscribed to hai/feedback/#")
+
     def stop(self):
         self.client.loop_stop()
         self.client.disconnect()
