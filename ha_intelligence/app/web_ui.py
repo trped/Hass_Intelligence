@@ -387,13 +387,24 @@ def get_dashboard_html() -> str:
   .mini-stat .item { font-size: 13px; }
   .mini-stat .item .val { font-weight: 600; }
   .mini-stat .item .lbl { color: var(--text-dim); }
+  .toggle-row { display:flex; justify-content:space-between; align-items:center; padding:8px 0; border-bottom:1px solid rgba(255,255,255,0.05); }
+  .toggle-row:last-child { border-bottom:none; }
+  .toggle-switch { position:relative; width:44px; height:24px; }
+  .toggle-switch input { opacity:0; width:0; height:0; }
+  .toggle-slider { position:absolute; cursor:pointer; top:0; left:0; right:0; bottom:0; background:#475569; border-radius:24px; transition:.3s; }
+  .toggle-slider:before { position:absolute; content:""; height:18px; width:18px; left:3px; bottom:3px; background:white; border-radius:50%; transition:.3s; }
+  .toggle-switch input:checked + .toggle-slider { background:var(--primary); }
+  .toggle-switch input:checked + .toggle-slider:before { transform:translateX(20px); }
+  .feedback-q { background:rgba(59,130,246,0.1); border-radius:8px; padding:12px; margin:8px 0; }
+  .feedback-q button { margin:4px 4px 0 0; padding:4px 12px; border:1px solid var(--primary); background:transparent; color:var(--primary); border-radius:6px; cursor:pointer; }
+  .feedback-q button:hover { background:var(--primary); color:white; }
 </style>
 </head>
 <body>
 
 <h1>
   <span class="icon">&#129504;</span> HA Intelligence
-  <span class="version">v0.7.3</span>
+  <span class="version">v0.8.0</span>
   <span style="flex:1"></span>
   <button class="refresh-btn" onclick="loadAll()">Opdater</button>
 </h1>
@@ -429,12 +440,22 @@ def get_dashboard_html() -> str:
 
 <div class="grid">
   <div class="card">
+    <h2>Feedback System</h2>
+    <div id="feedback-status">Indlaeser...</div>
+    <h3 style="font-size:13px;color:var(--text-dim);margin-top:12px;margin-bottom:8px">Ventende</h3>
+    <ul class="list" id="feedback-pending"><li>Indlaeser...</li></ul>
+  </div>
+  <div class="card">
+    <h2>Aktiviteter</h2>
+    <ul class="list" id="activities-current"><li>Indlaeser...</li></ul>
+  </div>
+  <div class="card">
     <h2>Rum</h2>
-    <ul class="list" id="rooms-list"><li>Indlaeser...</li></ul>
+    <ul class="list" id="rooms-admin"><li>Indlaeser...</li></ul>
   </div>
   <div class="card">
     <h2>Personer</h2>
-    <ul class="list" id="persons-list"><li>Indlaeser...</li></ul>
+    <ul class="list" id="persons-admin"><li>Indlaeser...</li></ul>
   </div>
 </div>
 
@@ -498,22 +519,34 @@ async function loadStats() {
 async function loadRooms() {
   try {
     const rooms = await fetchJson('/api/rooms');
-    const el = document.getElementById('rooms-list');
+    const el = document.getElementById('rooms-admin');
     if (!rooms.length) { el.innerHTML = '<li style="color:var(--text-dim)">Ingen rum opdaget endnu</li>'; return; }
-    el.innerHTML = rooms.map(r =>
-      `<li><span>${r.name}</span><span class="badge">${r.slug}</span></li>`
-    ).join('');
+    el.innerHTML = rooms.map(r => `
+        <li class="toggle-row">
+            <span>${r.name} <span class="badge">${r.slug}</span></span>
+            <label class="toggle-switch">
+                <input type="checkbox" ${r.enabled ? 'checked' : ''}
+                    onchange="toggleRoom('${r.slug}')">
+                <span class="toggle-slider"></span>
+            </label>
+        </li>`).join('');
   } catch(e) { console.error('Rooms error:', e); }
 }
 
 async function loadPersons() {
   try {
     const persons = await fetchJson('/api/persons');
-    const el = document.getElementById('persons-list');
+    const el = document.getElementById('persons-admin');
     if (!persons.length) { el.innerHTML = '<li style="color:var(--text-dim)">Ingen personer opdaget endnu</li>'; return; }
-    el.innerHTML = persons.map(p =>
-      `<li><span>${p.name}</span><span class="badge">${p.entity_id}</span></li>`
-    ).join('');
+    el.innerHTML = persons.map(p => `
+        <li class="toggle-row">
+            <span>${p.name} <span class="badge">${p.slug}</span></span>
+            <label class="toggle-switch">
+                <input type="checkbox" ${p.enabled ? 'checked' : ''}
+                    onchange="togglePerson('${p.slug}')">
+                <span class="toggle-slider"></span>
+            </label>
+        </li>`).join('');
   } catch(e) { console.error('Persons error:', e); }
 }
 
@@ -641,8 +674,74 @@ async function loadNotifications() {
   } catch(e) { console.error('Notifications error:', e); }
 }
 
+async function toggleRoom(slug) {
+    await fetch(BASE + '/api/rooms/' + slug + '/toggle', {method:'POST'});
+    loadRooms();
+}
+async function togglePerson(slug) {
+    await fetch(BASE + '/api/persons/' + slug + '/toggle', {method:'POST'});
+    loadPersons();
+}
+
+async function loadFeedback() {
+    try {
+        const [statsRes, pendingRes] = await Promise.all([
+            fetchJson('/api/feedback/stats'),
+            fetchJson('/api/feedback/pending')
+        ]);
+        const stats = statsRes;
+        const pending = pendingRes;
+
+        document.getElementById('feedback-status').innerHTML = `
+            <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;text-align:center">
+                <div><div style="font-size:1.5em;font-weight:bold">${stats.mode || '-'}</div><small>Tilstand</small></div>
+                <div><div style="font-size:1.5em;font-weight:bold">${stats.pending_questions || 0}</div><small>Ventende</small></div>
+                <div><div style="font-size:1.5em;font-weight:bold">${stats.answered_today || 0}</div><small>Besvaret i dag</small></div>
+            </div>`;
+
+        const el = document.getElementById('feedback-pending');
+        if (!pending.length) {
+            el.innerHTML = '<li style="color:var(--text-dim)">Ingen ventende</li>';
+            return;
+        }
+        el.innerHTML = pending.slice(0, 5).map(q => {
+            const opts = JSON.parse(q.options || '[]');
+            return `<li class="feedback-q">
+                <div>${q.question_text}</div>
+                <div>${opts.map(o => `<button onclick="answerFeedback(${q.id},'${o}')">${o}</button>`).join('')}</div>
+            </li>`;
+        }).join('');
+    } catch(e) { console.error('loadFeedback error', e); }
+}
+
+async function answerFeedback(id, answer) {
+    await fetch(BASE + '/api/feedback/' + id, {
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({answer})
+    });
+    loadFeedback();
+}
+
+async function loadActivities() {
+    try {
+        const acts = await fetchJson('/api/activities/current');
+        const el = document.getElementById('activities-current');
+        const entries = Object.entries(acts);
+        if (!entries.length) {
+            el.innerHTML = '<li style="color:var(--text-dim)">Ingen aktiviteter</li>';
+            return;
+        }
+        el.innerHTML = entries.map(([slug, a]) => `
+            <li class="toggle-row">
+                <span>${slug}</span>
+                <span class="badge">${a.activity} (${Math.round(a.confidence*100)}%)</span>
+            </li>`).join('');
+    } catch(e) { console.error('loadActivities error', e); }
+}
+
 function loadAll() {
-  loadStats(); loadRooms(); loadPersons(); loadEvents(); loadML(); loadPriors(); loadNotifications();
+  loadStats(); loadRooms(); loadPersons(); loadEvents(); loadML(); loadPriors(); loadNotifications(); loadFeedback(); loadActivities();
 }
 
 loadAll();
