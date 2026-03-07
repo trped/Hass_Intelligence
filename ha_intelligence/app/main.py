@@ -379,7 +379,7 @@ class SensorEngine:
                         source = source_tag
 
             # Choose best prediction
-            if source == 'ml_river' and ml_state:
+            if source != 'rule_based' and ml_state:
                 state = ml_state
                 confidence = ml_confidence
             else:
@@ -390,6 +390,11 @@ class SensorEngine:
             evidence = {'sources': [], 'count': 0, 'detail': {}}
             if self.ml_engine:
                 evidence = self.ml_engine.get_room_evidence(area_id, room_info)
+
+            # Phase 3: Prior probability info
+            prior_info = {'best_state': None, 'best_probability': 0.0, 'has_data': False}
+            if self.ml_engine:
+                prior_info = self.ml_engine.priors.get_prior('room', area_id)
 
             # Feedback loop: close previous prediction with current actual state
             target = f'room_{area_id}'
@@ -429,6 +434,10 @@ class SensorEngine:
                     'evidence_sources': evidence['sources'],
                     'evidence_count': evidence['count'],
                     'evidence_detail': evidence['detail'],
+                    # Phase 3: State priors
+                    'prior_state': prior_info.get('best_state'),
+                    'prior_probability': prior_info.get('best_probability', 0.0),
+                    'prior_available': prior_info.get('has_data', False),
                 }
             )
 
@@ -471,7 +480,7 @@ class SensorEngine:
                         source = source_tag
 
             # Choose best prediction
-            if source == 'ml_river' and ml_state:
+            if source != 'rule_based' and ml_state:
                 state = ml_state
                 confidence = ml_confidence
             else:
@@ -501,6 +510,12 @@ class SensorEngine:
                 confidence=confidence,
                 method=source,
             )
+
+            # Phase 3: Prior probability info
+            person_slug = entity_id.replace('person.', '')
+            person_prior_info = {'best_state': None, 'best_probability': 0.0, 'has_data': False}
+            if self.ml_engine:
+                person_prior_info = self.ml_engine.priors.get_prior('person', person_slug)
 
             # BLE room data with motion fallback
             room_data = self._person_rooms.get(entity_id, {})
@@ -551,6 +566,10 @@ class SensorEngine:
                     'ml_state': ml_state,
                     'ml_confidence': ml_confidence,
                     'ml_samples': ml_samples,
+                    # Phase 3: State priors
+                    'prior_state': person_prior_info.get('best_state'),
+                    'prior_probability': person_prior_info.get('best_probability', 0.0),
+                    'prior_available': person_prior_info.get('has_data', False),
                 }
             )
 
@@ -593,11 +612,22 @@ class SensorEngine:
             ml_info['accuracy_correct'] = 0
             ml_info['accuracy_pct'] = 0.0
 
+        # Phase 3: Prior stats
+        prior_targets = []
+        if self.ml_engine:
+            prior_targets = self.ml_engine.priors.get_all_targets()
+        ml_info['priors_calculated'] = len(prior_targets)
+        ml_info['priors_last_run'] = (
+            self.ml_engine.priors._last_run.isoformat()
+            if self.ml_engine and self.ml_engine.priors._last_run
+            else None
+        )
+
         status = 'ml_active' if ml_info['ml_active'] else 'learning'
         self.mqtt.publish_system_status(
             status=status,
             attributes={
-                'version': '0.4.1',
+                'version': '0.4.2',
                 'events_24h': stats['events_24h'],
                 'events_total': stats['events_total'],
                 'entities_discovered': stats['entities_discovered'],
@@ -784,6 +814,7 @@ async def main():
         asyncio.create_task(sensor_engine.periodic_publish()),
         asyncio.create_task(sensor_engine.periodic_maintenance()),
         asyncio.create_task(ml_engine.models.periodic_save()),
+        asyncio.create_task(ml_engine.priors.nightly_job()),
         asyncio.create_task(server.serve()),
     ]
 

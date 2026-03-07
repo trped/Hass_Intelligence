@@ -92,7 +92,7 @@ def create_app(db, event_listener, mqtt_pub, registry=None, ml_engine=None) -> F
     async def health():
         return {
             "status": "ok",
-            "version": "0.3.4",
+            "version": "0.4.2",
             "ws_connected": event_listener.connected,
             "mqtt_connected": mqtt_pub.connected,
             "registry_loaded": registry is not None and registry.entity_count > 0,
@@ -141,6 +141,48 @@ def create_app(db, event_listener, mqtt_pub, registry=None, ml_engine=None) -> F
             "SELECT * FROM predictions ORDER BY id DESC LIMIT ?",
             (limit,), fetch=True
         )
+
+    @app.get("/api/priors")
+    async def priors_overview():
+        """Get prior calculation status and targets."""
+        if not ml_engine:
+            return {'error': 'ML engine not initialized', 'targets': []}
+        targets = ml_engine.priors.get_all_targets()
+        return {
+            'targets': targets,
+            'total_targets': len(targets),
+            'last_run': (
+                ml_engine.priors._last_run.isoformat()
+                if ml_engine.priors._last_run else None
+            ),
+        }
+
+    @app.get("/api/priors/heatmap")
+    async def priors_heatmap(target_type: str = 'room',
+                              target_id: str = '',
+                              state: str = 'occupied'):
+        """Get 24x7 heatmap data for a target/state."""
+        if not ml_engine:
+            return {'error': 'ML engine not initialized', 'heatmap': []}
+        if not target_id:
+            return {'error': 'target_id required', 'heatmap': []}
+        heatmap = ml_engine.priors.get_heatmap(target_type, target_id, state)
+        return {
+            'target_type': target_type,
+            'target_id': target_id,
+            'state': state,
+            'heatmap': heatmap,
+        }
+
+    @app.get("/api/priors/current")
+    async def priors_current(target_type: str = 'room',
+                              target_id: str = ''):
+        """Get current prior probability for a target."""
+        if not ml_engine:
+            return {'error': 'ML engine not initialized'}
+        if not target_id:
+            return {'error': 'target_id required'}
+        return ml_engine.priors.get_prior(target_type, target_id)
 
     return app
 
@@ -220,7 +262,7 @@ def get_dashboard_html() -> str:
 
 <h1>
   <span class="icon">&#129504;</span> HA Intelligence
-  <span class="version">v0.3.4</span>
+  <span class="version">v0.4.2</span>
   <span style="flex:1"></span>
   <button class="refresh-btn" onclick="loadAll()">Opdater</button>
 </h1>
@@ -243,6 +285,10 @@ def get_dashboard_html() -> str:
   <div class="card">
     <h2>ML Status</h2>
     <div id="ml-info">Indlaeser...</div>
+  </div>
+  <div class="card">
+    <h2>State Priors</h2>
+    <div id="priors-info">Indlaeser...</div>
   </div>
 </div>
 
@@ -388,8 +434,28 @@ async function loadML() {
   } catch(e) { console.error('ML error:', e); }
 }
 
+async function loadPriors() {
+  try {
+    const p = await fetchJson('/api/priors');
+    const el = document.getElementById('priors-info');
+    const lastRun = p.last_run ? new Date(p.last_run).toLocaleString('da-DK') : 'Aldrig';
+    const targets = p.targets || [];
+    const rooms = targets.filter(t => t.target_type === 'room');
+    const persons = targets.filter(t => t.target_type === 'person');
+    el.innerHTML = `
+      <p><span class="badge ${targets.length > 0 ? 'green' : 'orange'}">${targets.length} targets</span></p>
+      <div class="mini-stat" style="margin-top:8px">
+        <div class="item"><span class="val">${rooms.length}</span> <span class="lbl">rum</span></div>
+        <div class="item"><span class="val">${persons.length}</span> <span class="lbl">personer</span></div>
+      </div>
+      <p style="margin-top:8px;font-size:12px;color:var(--text-dim)">Sidste beregning: ${lastRun}</p>
+      <p style="margin-top:4px;font-size:11px;color:var(--text-dim)">Koerer kl. 03:00 UTC</p>
+    `;
+  } catch(e) { console.error('Priors error:', e); }
+}
+
 function loadAll() {
-  loadStats(); loadRooms(); loadPersons(); loadEvents(); loadML();
+  loadStats(); loadRooms(); loadPersons(); loadEvents(); loadML(); loadPriors();
 }
 
 loadAll();

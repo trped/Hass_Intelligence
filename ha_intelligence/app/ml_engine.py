@@ -13,11 +13,17 @@ from typing import Optional, Tuple
 
 from features import FeatureExtractor
 from models.model_manager import ModelManager
+from priors import PriorCalculator
 
 logger = logging.getLogger(__name__)
 
 # Minimum observations before ML predictions are used
 ML_THRESHOLD = 50
+
+# Weight for combining ML prediction with prior probability
+# final = ML_WEIGHT * ml_confidence + PRIOR_WEIGHT * prior_probability
+ML_WEIGHT = 0.7
+PRIOR_WEIGHT = 0.3
 
 
 class MLEngine:
@@ -28,6 +34,7 @@ class MLEngine:
         self.registry = registry
         self.features = FeatureExtractor(registry=registry)
         self.models = ModelManager(db=db)
+        self.priors = PriorCalculator(db=db)
         self._executor = ThreadPoolExecutor(max_workers=2)
         self._person_rooms = {}  # person_entity -> room dict (synced from SensorEngine)
         self._room_states = {}   # area_id -> room_state dict (synced from SensorEngine)
@@ -148,10 +155,13 @@ class MLEngine:
 
     def predict_room(self, area_id: str,
                      room_state: dict) -> Optional[Tuple[str, float, str]]:
-        """Predict room occupancy using ML model.
+        """Predict room occupancy using ML model + prior weighting.
+
+        Combines ML prediction confidence with historical state priors:
+          final_confidence = ML_WEIGHT * ml_confidence + PRIOR_WEIGHT * prior_probability
 
         Returns:
-            Tuple of (state, confidence, 'ml_river') or None if ML
+            Tuple of (state, confidence, source_tag) or None if ML
             doesn't have enough data yet.
         """
         model = self.models.room_models.get(area_id)
@@ -160,10 +170,23 @@ class MLEngine:
 
         try:
             features = self.features.extract_room_features(area_id, room_state)
-            label, confidence = model.predict(features)
+            label, ml_confidence = model.predict(features)
             if label == 'unknown':
                 return None
-            return (label, confidence, 'ml_river')
+
+            # Phase 3: Combine with prior probability
+            prior_info = self.priors.get_prior('room', area_id)
+            if prior_info['has_data']:
+                prior_prob = prior_info['priors'].get(label, 0.0)
+                confidence = round(
+                    ML_WEIGHT * ml_confidence + PRIOR_WEIGHT * prior_prob, 4
+                )
+                source = 'ml_river+prior'
+            else:
+                confidence = ml_confidence
+                source = 'ml_river'
+
+            return (label, confidence, source)
         except Exception as e:
             logger.debug(f"Room predict error for {area_id}: {e}")
             return None
@@ -189,10 +212,24 @@ class MLEngine:
                 person_entity, person_state, rooms_with_motion,
                 person_room=person_room
             )
-            label, confidence = model.predict(features)
+            label, ml_confidence = model.predict(features)
             if label == 'unknown':
                 return None
-            return (label, confidence, 'ml_river')
+
+            # Phase 3: Combine with prior probability
+            slug = person_entity.replace('person.', '')
+            prior_info = self.priors.get_prior('person', slug)
+            if prior_info['has_data']:
+                prior_prob = prior_info['priors'].get(label, 0.0)
+                confidence = round(
+                    ML_WEIGHT * ml_confidence + PRIOR_WEIGHT * prior_prob, 4
+                )
+                source = 'ml_river+prior'
+            else:
+                confidence = ml_confidence
+                source = 'ml_river'
+
+            return (label, confidence, source)
         except Exception as e:
             logger.debug(f"Person predict error for {person_entity}: {e}")
             return None
