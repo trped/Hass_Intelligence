@@ -25,13 +25,6 @@ options:
   mqtt_port: 1883
   mqtt_user: "admin"
   mqtt_password: "trped1271"
-  haiku_api_key: ""
-  haiku_enabled: false
-  haiku_anomaly: true
-  haiku_low_confidence: false
-  haiku_daily_summary: true
-  haiku_energy: false
-  haiku_max_tokens_day: 5000
   feedback_active: true
   feedback_max_daily: 3
   feedback_cooldown_min: 120
@@ -44,13 +37,6 @@ schema:
   mqtt_port: port
   mqtt_user: str?
   mqtt_password: password?
-  haiku_api_key: password?
-  haiku_enabled: bool
-  haiku_anomaly: bool
-  haiku_low_confidence: bool
-  haiku_daily_summary: bool
-  haiku_energy: bool
-  haiku_max_tokens_day: int
   feedback_active: bool
   feedback_max_daily: int(1,20)
   feedback_cooldown_min: int(10,1440)
