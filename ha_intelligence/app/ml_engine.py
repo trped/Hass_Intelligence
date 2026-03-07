@@ -92,8 +92,12 @@ class MLEngine:
             hour = datetime.now(timezone.utc).hour
             markov = self.models.get_or_create_markov_model(person_entity)
             markov.record_transition(from_room, to_room, hour)
+            logger.info(
+                f"Markov: {person_entity} {from_room}→{to_room} "
+                f"(total: {markov.total_transitions})"
+            )
         except Exception as e:
-            logger.debug(f"Markov transition error: {e}")
+            logger.warning(f"Markov transition error: {e}")
 
     def update_room_state(self, area_id: str, room_state: dict):
         """Sync room state from SensorEngine for rich feature extraction."""

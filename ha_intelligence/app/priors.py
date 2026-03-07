@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 logger = logging.getLogger(__name__)
 
 # Minimum days of data before priors are considered reliable
-MIN_DAYS_FOR_PRIORS = 7
+MIN_DAYS_FOR_PRIORS = 2
 
 
 class PriorCalculator:
@@ -61,19 +61,19 @@ class PriorCalculator:
         # Use SQLite strftime to extract hour and weekday from observed_at
         # SQLite weekday: 0=Sunday, we want 0=Monday → (weekday + 6) % 7
         agg_rows = self.db.execute(
-            """SELECT
-                 model_type,
-                 CASE WHEN model_type = 'room' THEN area_id ELSE person_id END as target_id,
-                 CAST(strftime('%%H', observed_at) AS INTEGER) as hour,
-                 (CAST(strftime('%%w', observed_at) AS INTEGER) + 6) %% 7 as weekday,
-                 label,
-                 COUNT(*) as cnt
-               FROM observations
-               WHERE observed_at > datetime('now', '-30 days')
-                 AND label IS NOT NULL
-                 AND (area_id IS NOT NULL OR person_id IS NOT NULL)
-               GROUP BY model_type, target_id, hour, weekday, label
-               ORDER BY model_type, target_id, hour, weekday, cnt DESC""",
+            "SELECT"
+            "  model_type,"
+            "  CASE WHEN model_type = 'room' THEN area_id ELSE person_id END as target_id,"
+            "  CAST(strftime('%H', observed_at) AS INTEGER) as hour,"
+            "  (CAST(strftime('%w', observed_at) AS INTEGER) + 6) % 7 as weekday,"
+            "  label,"
+            "  COUNT(*) as cnt"
+            " FROM observations"
+            " WHERE observed_at > datetime('now', '-30 days')"
+            "  AND label IS NOT NULL"
+            "  AND (area_id IS NOT NULL OR person_id IS NOT NULL)"
+            " GROUP BY model_type, target_id, hour, weekday, label"
+            " ORDER BY model_type, target_id, hour, weekday, cnt DESC",
             fetch=True
         )
 
@@ -199,6 +199,16 @@ class PriorCalculator:
     async def nightly_job(self):
         """Async task that runs prior calculation at 03:00 every night."""
         logger.info("Prior nightly job task started")
+
+        # Run once at startup after a short delay
+        await asyncio.sleep(30)
+        try:
+            loop = asyncio.get_event_loop()
+            count = await loop.run_in_executor(None, self.calculate_all_priors)
+            logger.info(f"Startup prior calculation done: {count} entries")
+        except Exception as e:
+            logger.error(f"Startup prior calculation error: {e}")
+
         while True:
             try:
                 now = datetime.now(timezone.utc)
@@ -216,7 +226,7 @@ class PriorCalculator:
                 # Minimum wait: 60 seconds (avoid tight loops)
                 seconds_until = max(60, seconds_until)
 
-                logger.debug(
+                logger.info(
                     f"Prior nightly job sleeping {seconds_until}s "
                     f"(next run at {target_hour}:00 UTC)"
                 )

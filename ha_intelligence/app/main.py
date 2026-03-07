@@ -33,6 +33,7 @@ try:
     from haiku_engine import HaikuEngine
     from ml_engine import MLEngine
     from mqtt_publisher import MQTTPublisher
+    from notifications import NotificationEngine
     from registry import Registry
     from web_ui import create_app
 except Exception as e:
@@ -90,13 +91,15 @@ class SensorEngine:
 
     def __init__(self, db: Database, mqtt: MQTTPublisher, discovery: Discovery,
                  registry: Registry = None, ml_engine: MLEngine = None,
-                 haiku_engine: 'HaikuEngine' = None):
+                 haiku_engine: 'HaikuEngine' = None,
+                 notification_engine: 'NotificationEngine' = None):
         self.db = db
         self.mqtt = mqtt
         self.discovery = discovery
         self.registry = registry
         self.ml_engine = ml_engine
         self.haiku_engine = haiku_engine
+        self.notification_engine = notification_engine
         self._room_states = {}   # area_id -> last known state info
         self._person_states = {} # entity_id -> last known state info
         self._tracker_to_person = {}  # device_tracker entity_id -> person entity_id
@@ -432,6 +435,13 @@ class SensorEngine:
                 await self._publish_system()
                 await self._publish_time_context()
                 await self._publish_household()
+
+                # Check notification triggers
+                if self.notification_engine:
+                    self.notification_engine.check_anomalies(self.ml_engine)
+                    self.notification_engine.check_low_confidence(
+                        self._room_states
+                    )
             except Exception as e:
                 logger.error(f"Publish error: {e}")
             await asyncio.sleep(self._publish_interval)
@@ -934,9 +944,13 @@ async def main():
     haiku_engine = HaikuEngine(options, db=db, ml_engine=ml_engine)
     logger.info(f"Haiku engine initialized (active={haiku_engine.active})")
 
+    # Initialize notification engine
+    notification_engine = NotificationEngine(options, mqtt_publisher=mqtt)
+    logger.info(f"Notification engine initialized (active={notification_engine.active})")
+
     sensor_engine = SensorEngine(
         db, mqtt, discovery, registry=registry, ml_engine=ml_engine,
-        haiku_engine=haiku_engine,
+        haiku_engine=haiku_engine, notification_engine=notification_engine,
     )
 
     # Initialize BLE person-room tracking from config
@@ -959,7 +973,7 @@ async def main():
 
     # Create web app
     app = create_app(db, event_listener, mqtt, registry=registry, ml_engine=ml_engine,
-                     haiku_engine=haiku_engine)
+                     haiku_engine=haiku_engine, notification_engine=notification_engine)
 
     # Start all tasks
     loop = asyncio.get_event_loop()

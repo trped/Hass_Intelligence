@@ -14,7 +14,7 @@ INGRESS_PATH = os.environ.get('INGRESS_PATH', '')
 
 
 def create_app(db, event_listener, mqtt_pub, registry=None, ml_engine=None,
-               haiku_engine=None) -> FastAPI:
+               haiku_engine=None, notification_engine=None) -> FastAPI:
     """Create FastAPI app with ingress support."""
 
     # Strip trailing slashes from ingress path to avoid double-slash issues
@@ -47,6 +47,12 @@ def create_app(db, event_listener, mqtt_pub, registry=None, ml_engine=None,
             s['registry_devices'] = registry.device_count
             s['registry_mapped'] = registry.mapped_count
         return s
+
+    @app.get("/api/notifications")
+    async def notifications():
+        if notification_engine:
+            return notification_engine.get_status()
+        return {'active': False, 'sent_today': 0, 'history': []}
 
     @app.get("/api/rooms")
     async def rooms():
