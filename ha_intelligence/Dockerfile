@@ -1,13 +1,11 @@
 ARG BUILD_FROM
 FROM ${BUILD_FROM}
 
-# Install scikit-learn from Alpine repos (pre-compiled, avoids 10+ min build)
-# Then install remaining Python deps via pip
+# Install build dependencies for River (C extensions), compile, then clean up
 COPY requirements.txt /tmp/
-RUN apk add --no-cache py3-scikit-learn \
-    && apk add --no-cache --virtual .build-deps \
+RUN apk add --no-cache --virtual .build-deps \
         gcc musl-dev g++ libffi-dev \
-    && pip3 install --no-cache-dir --break-system-packages -r /tmp/requirements.txt \
+    && pip3 install --no-cache-dir -r /tmp/requirements.txt \
     && apk del .build-deps
 
 # Create model persistence directory
