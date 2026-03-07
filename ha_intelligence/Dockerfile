@@ -1,10 +1,11 @@
 ARG BUILD_FROM
 FROM ${BUILD_FROM}
 
-# Install build dependencies for River (C extensions), compile, then clean up
+# Install runtime deps (openblas for scipy/scikit-learn) and build deps
 COPY requirements.txt /tmp/
-RUN apk add --no-cache --virtual .build-deps \
-        gcc musl-dev g++ libffi-dev \
+RUN apk add --no-cache openblas-dev \
+    && apk add --no-cache --virtual .build-deps \
+        gcc musl-dev g++ libffi-dev gfortran cmake \
     && pip3 install --no-cache-dir -r /tmp/requirements.txt \
     && apk del .build-deps
 
