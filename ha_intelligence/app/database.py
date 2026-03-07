@@ -409,7 +409,7 @@ class Database:
 
     # ── Model Versions ──────────────────────────────────────────
 
-    def upsert_model_version(self, model_name: str, version: int,
+    def upsert_model_version(self, model_name: str, version: int = 1,
                               accuracy: float = 0.0, samples_seen: int = 0):
         self.execute(
             """INSERT INTO model_versions (model_name, version, accuracy, samples_seen)

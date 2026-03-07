@@ -1,23 +1,42 @@
 """HA Intelligence Add-on - Main entry point."""
 
-import asyncio
-import json
-import logging
-import math
 import os
-import signal
 import sys
-from datetime import datetime, timezone, timedelta
+import traceback
 
-import uvicorn
+# Early crash log helper — captures import-time failures
+_CRASH_LOG = '/data/startup.log'
 
-from database import Database
-from discovery import Discovery
-from event_listener import EventListener
-from ml_engine import MLEngine
-from mqtt_publisher import MQTTPublisher
-from registry import Registry
-from web_ui import create_app
+def _write_crash(msg, exc=None):
+    try:
+        with open(_CRASH_LOG, 'a') as f:
+            f.write(f"{msg}\n")
+            if exc:
+                traceback.print_exc(file=f)
+            f.flush()
+    except Exception:
+        pass
+
+try:
+    import asyncio
+    import json
+    import logging
+    import math
+    import signal
+    from datetime import datetime, timezone, timedelta
+
+    import uvicorn
+
+    from database import Database
+    from discovery import Discovery
+    from event_listener import EventListener
+    from ml_engine import MLEngine
+    from mqtt_publisher import MQTTPublisher
+    from registry import Registry
+    from web_ui import create_app
+except Exception as e:
+    _write_crash(f"IMPORT ERROR: {type(e).__name__}: {e}", exc=e)
+    raise
 
 
 def resolve_supervisor_token() -> str:
@@ -856,7 +875,7 @@ class SensorEngine:
 
 async def main():
     logger.info("=" * 50)
-    logger.info("HA Intelligence v0.5.2 starting...")
+    logger.info("HA Intelligence v0.5.3 starting...")
     logger.info("=" * 50)
 
     # Load config
@@ -979,4 +998,18 @@ async def main():
 
 
 if __name__ == '__main__':
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except Exception as e:
+        # Write crash info to file readable via SSH
+        import traceback
+        crash_log = '/data/startup.log'
+        try:
+            with open(crash_log, 'w') as f:
+                f.write(f"CRASH at {datetime.now()}\n")
+                f.write(f"Error: {e}\n\n")
+                traceback.print_exc(file=f)
+            print(f"Crash logged to {crash_log}", file=sys.stderr)
+        except Exception:
+            pass
+        raise
