@@ -30,7 +30,6 @@ try:
     from database import Database
     from discovery import Discovery
     from event_listener import EventListener
-    from haiku_engine import HaikuEngine
     from ml_engine import MLEngine
     from mqtt_publisher import MQTTPublisher
     from notifications import NotificationEngine
@@ -91,14 +90,12 @@ class SensorEngine:
 
     def __init__(self, db: Database, mqtt: MQTTPublisher, discovery: Discovery,
                  registry: Registry = None, ml_engine: MLEngine = None,
-                 haiku_engine: 'HaikuEngine' = None,
                  notification_engine: 'NotificationEngine' = None):
         self.db = db
         self.mqtt = mqtt
         self.discovery = discovery
         self.registry = registry
         self.ml_engine = ml_engine
-        self.haiku_engine = haiku_engine
         self.notification_engine = notification_engine
         self._room_states = {}   # area_id -> last known state info
         self._person_states = {} # entity_id -> last known state info
@@ -788,31 +785,18 @@ class SensorEngine:
             else None
         )
 
-        # Haiku status
-        haiku_active = False
-        haiku_info = {}
-        if self.haiku_engine:
-            haiku_active = self.haiku_engine.active
-            haiku_info = {
-                'haiku_tokens_today': self.haiku_engine._budget.used_today,
-                'haiku_api_calls': self.haiku_engine._total_api_calls,
-                'haiku_source': self.haiku_engine._last_summary_source,
-            }
-
         status = 'ml_active' if ml_info['ml_active'] else 'learning'
         self.mqtt.publish_system_status(
             status=status,
             attributes={
-                'version': HaikuEngine.VERSION,
+                'version': '0.8.0',
                 'events_24h': stats['events_24h'],
                 'events_total': stats['events_total'],
                 'entities_discovered': stats['entities_discovered'],
                 'rooms': stats['rooms'],
                 'persons': stats['persons'],
-                'haiku_active': haiku_active,
                 **reg_info,
                 **ml_info,
-                **haiku_info,
             }
         )
 
@@ -940,17 +924,13 @@ async def main():
     ml_engine = MLEngine(db, registry=registry)
     logger.info("ML engine initialized")
 
-    # Initialize Haiku engine
-    haiku_engine = HaikuEngine(options, db=db, ml_engine=ml_engine)
-    logger.info(f"Haiku engine initialized (active={haiku_engine.active})")
-
     # Initialize notification engine
     notification_engine = NotificationEngine(options, mqtt_publisher=mqtt)
     logger.info(f"Notification engine initialized (active={notification_engine.active})")
 
     sensor_engine = SensorEngine(
         db, mqtt, discovery, registry=registry, ml_engine=ml_engine,
-        haiku_engine=haiku_engine, notification_engine=notification_engine,
+        notification_engine=notification_engine,
     )
 
     # Initialize BLE person-room tracking from config
@@ -973,7 +953,7 @@ async def main():
 
     # Create web app
     app = create_app(db, event_listener, mqtt, registry=registry, ml_engine=ml_engine,
-                     haiku_engine=haiku_engine, notification_engine=notification_engine)
+                     notification_engine=notification_engine)
 
     # Start all tasks
     loop = asyncio.get_event_loop()
@@ -1007,7 +987,6 @@ async def main():
         asyncio.create_task(ml_engine.models.periodic_save()),
         asyncio.create_task(ml_engine.priors.nightly_job()),
         asyncio.create_task(ml_engine.models.nightly_batch_training()),
-        asyncio.create_task(haiku_engine.periodic_summary(sensor_engine)),
         asyncio.create_task(server.serve()),
     ]
 
