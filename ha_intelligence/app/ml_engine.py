@@ -29,6 +29,11 @@ class MLEngine:
         self.features = FeatureExtractor(registry=registry)
         self.models = ModelManager(db=db)
         self._executor = ThreadPoolExecutor(max_workers=2)
+        self._person_rooms = {}  # person_entity -> room dict (synced from SensorEngine)
+
+    def update_person_room(self, person_entity: str, room_data: dict):
+        """Update BLE room data for a person (called from SensorEngine)."""
+        self._person_rooms[person_entity] = room_data
 
     async def on_state_change(self, entity_id: str, old_state: str,
                                new_state: str, attributes: dict):
@@ -113,8 +118,11 @@ class MLEngine:
                 'source': attributes.get('source'),
             }
 
+            # Include BLE room data in feature extraction
+            person_room = self._person_rooms.get(person_entity)
+
             features = self.features.extract_person_features(
-                person_entity, person_state
+                person_entity, person_state, person_room=person_room
             )
             model = self.models.get_or_create_person_model(person_entity)
             model.learn(features, label, age_minutes=0.0)
@@ -166,8 +174,12 @@ class MLEngine:
             return None
 
         try:
+            # Include BLE room data in feature extraction
+            person_room = self._person_rooms.get(person_entity)
+
             features = self.features.extract_person_features(
-                person_entity, person_state, rooms_with_motion
+                person_entity, person_state, rooms_with_motion,
+                person_room=person_room
             )
             label, confidence = model.predict(features)
             if label == 'unknown':

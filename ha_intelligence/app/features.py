@@ -98,7 +98,8 @@ class FeatureExtractor:
 
     def extract_person_features(self, person_entity: str, person_state: dict,
                                  rooms_with_motion: int = 0,
-                                 timestamp: Optional[datetime] = None) -> dict:
+                                 timestamp: Optional[datetime] = None,
+                                 person_room: dict = None) -> dict:
         """Extract features for person activity prediction.
 
         Args:
@@ -106,6 +107,7 @@ class FeatureExtractor:
             person_state: Dict with 'ha_state', 'source' from SensorEngine
             rooms_with_motion: Number of rooms with active motion sensors
             timestamp: Optional timestamp (defaults to now)
+            person_room: Optional BLE room data from SensorEngine._person_rooms
         """
         if timestamp is None:
             timestamp = datetime.now(timezone.utc)
@@ -137,6 +139,29 @@ class FeatureExtractor:
         features['source_gps'] = 1 if 'gps' in str(source).lower() else 0
         features['source_router'] = 1 if 'router' in str(source).lower() else 0
         features['source_ble'] = 1 if 'ble' in str(source).lower() or 'bermuda' in str(source).lower() else 0
+
+        # BLE person-room features (Phase 1)
+        if person_room:
+            room_source = person_room.get('source', 'none')
+            features['ble_area_known'] = 1 if room_source in ('ble', 'motion_fallback') else 0
+            ble_dist = person_room.get('distance')
+            features['ble_distance'] = float(ble_dist) if ble_dist is not None else 0.0
+
+            # Minutes in current room
+            room_entered = person_room.get('room_entered_at')
+            if room_entered:
+                try:
+                    entered_dt = datetime.fromisoformat(room_entered)
+                    minutes = (timestamp - entered_dt).total_seconds() / 60.0
+                    features['minutes_in_current_room'] = min(minutes, 1440)
+                except (ValueError, TypeError):
+                    features['minutes_in_current_room'] = 0.0
+            else:
+                features['minutes_in_current_room'] = 0.0
+        else:
+            features['ble_area_known'] = 0
+            features['ble_distance'] = 0.0
+            features['minutes_in_current_room'] = 0.0
 
         return features
 
