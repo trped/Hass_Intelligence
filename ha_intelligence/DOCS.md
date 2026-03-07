@@ -25,8 +25,6 @@ HA Intelligence lytter på **alle** state-ændringer i dit Home Assistant system
 | `mqtt_port` | `1883` | MQTT broker port |
 | `mqtt_user` | *(tom)* | MQTT brugernavn |
 | `mqtt_password` | *(tom)* | MQTT password |
-| `haiku_api_key` | *(tom)* | Anthropic API key til Claude Haiku |
-| `haiku_enabled` | `false` | Aktivér AI-assistance |
 | `feedback_active` | `true` | Send feedback-notifikationer |
 | `feedback_max_daily` | `3` | Max feedback-spørgsmål per dag |
 | `log_level` | `info` | Log niveau (debug/info/warning/error) |
@@ -59,5 +57,5 @@ Attributter:
 
 - **v0.1** — Event indsamling, sensor discovery, basale sensorer
 - **v0.2** — Online ML (River), mønstergenkendelse
-- **v0.3** — Claude Haiku integration, aktiv feedback
+- **v0.3** — Aktiv feedback, human-in-the-loop
 - **v0.4** — Anomali-detektion, energi-optimering

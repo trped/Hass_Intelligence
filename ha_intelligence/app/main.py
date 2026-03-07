@@ -21,7 +21,6 @@ try:
     import asyncio
     import json
     import logging
-    import math
     import signal
     from datetime import datetime, timezone, timedelta
 
@@ -430,7 +429,6 @@ class SensorEngine:
                 await self._publish_rooms()
                 await self._publish_persons()
                 await self._publish_system()
-                await self._publish_time_context()
                 await self._publish_household()
 
                 # Check notification triggers
@@ -797,44 +795,6 @@ class SensorEngine:
                 'persons': stats['persons'],
                 **reg_info,
                 **ml_info,
-            }
-        )
-
-    async def _publish_time_context(self):
-        """Publish time context sensor with time-of-day category."""
-        now = datetime.now(timezone.utc)
-        hour = now.hour
-        weekday = now.weekday()
-
-        # Categorize time of day
-        if 6 <= hour < 10:
-            period = 'morgen'
-        elif 10 <= hour < 17:
-            period = 'dag'
-        elif 17 <= hour < 22:
-            period = 'aften'
-        else:
-            period = 'nat'
-
-        # Cyclic time encoding
-        hour_sin = round(math.sin(2 * math.pi * hour / 24), 4)
-        hour_cos = round(math.cos(2 * math.pi * hour / 24), 4)
-        weekday_sin = round(math.sin(2 * math.pi * weekday / 7), 4)
-        weekday_cos = round(math.cos(2 * math.pi * weekday / 7), 4)
-        is_weekend = weekday >= 5
-
-        self.mqtt.publish_time_context(
-            state=period,
-            attributes={
-                'hour': hour,
-                'weekday': weekday,
-                'weekday_name': ['mandag', 'tirsdag', 'onsdag', 'torsdag',
-                                 'fredag', 'lørdag', 'søndag'][weekday],
-                'is_weekend': is_weekend,
-                'hour_sin': hour_sin,
-                'hour_cos': hour_cos,
-                'weekday_sin': weekday_sin,
-                'weekday_cos': weekday_cos,
             }
         )
 

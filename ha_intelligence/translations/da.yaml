@@ -11,27 +11,6 @@ configuration:
   mqtt_password:
     name: MQTT Password
     description: Password til MQTT broker
-  haiku_api_key:
-    name: Anthropic API Key
-    description: API nøgle til Claude Haiku (valgfri)
-  haiku_enabled:
-    name: Aktivér Haiku AI
-    description: Brug Claude Haiku til lav-confidence forudsigelser
-  haiku_anomaly:
-    name: Haiku til anomalier
-    description: Brug Haiku til at forklare usædvanlige mønstre
-  haiku_low_confidence:
-    name: Haiku ved lav confidence
-    description: Kald Haiku når ML-modellen er usikker
-  haiku_daily_summary:
-    name: Daglig Haiku-opsummering
-    description: Generer daglig opsummering med Haiku
-  haiku_energy:
-    name: Haiku energi-anbefalinger
-    description: Brug Haiku til energi-optimeringsforslag
-  haiku_max_tokens_day:
-    name: Max tokens per dag
-    description: Maksimalt antal Haiku tokens per dag
   feedback_active:
     name: Aktiv feedback
     description: Send notifikationer for at bekræfte forudsigelser

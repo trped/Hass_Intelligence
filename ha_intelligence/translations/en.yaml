@@ -11,27 +11,6 @@ configuration:
   mqtt_password:
     name: MQTT Password
     description: Password for MQTT broker
-  haiku_api_key:
-    name: Anthropic API Key
-    description: API key for Claude Haiku (optional)
-  haiku_enabled:
-    name: Enable Haiku AI
-    description: Use Claude Haiku for low-confidence predictions
-  haiku_anomaly:
-    name: Haiku for anomalies
-    description: Use Haiku to explain unusual patterns
-  haiku_low_confidence:
-    name: Haiku for low confidence
-    description: Call Haiku when ML model is uncertain
-  haiku_daily_summary:
-    name: Daily Haiku summary
-    description: Generate daily summary with Haiku
-  haiku_energy:
-    name: Haiku energy recommendations
-    description: Use Haiku for energy optimization suggestions
-  haiku_max_tokens_day:
-    name: Max tokens per day
-    description: Maximum Haiku tokens per day
   feedback_active:
     name: Active feedback
     description: Send notifications to confirm predictions
