@@ -30,6 +30,11 @@ options:
   feedback_cooldown_min: 120
   feedback_quiet_start: "22:00"
   feedback_quiet_end: "07:00"
+  feedback_confidence_threshold: 40
+  feedback_bootstrap_days: 14
+  feedback_activity_enabled: true
+  activity_zone_config: '{}'
+  activity_device_sensors: '{}'
   bermuda_sensors: '{"person.troels":"sensor.bermuda_aff9c3e51e7943268af745c50577d7a0_100_40004_area_last_seen","person.hanne":"sensor.hanne_iphone_area","person.darwin":"sensor.darwin_iphone_area","person.maria":"sensor.maria_iphone_area"}'
   log_level: "info"
 schema:
@@ -42,5 +47,10 @@ schema:
   feedback_cooldown_min: int(10,1440)
   feedback_quiet_start: str
   feedback_quiet_end: str
+  feedback_confidence_threshold: int(10,90)
+  feedback_bootstrap_days: int(1,60)
+  feedback_activity_enabled: bool
+  activity_zone_config: str?
+  activity_device_sensors: str?
   bermuda_sensors: str?
   log_level: list(debug|info|warning|error)
