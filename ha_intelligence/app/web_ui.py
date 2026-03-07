@@ -14,7 +14,7 @@ INGRESS_PATH = os.environ.get('INGRESS_PATH', '')
 
 
 def create_app(db, event_listener, mqtt_pub, registry=None, ml_engine=None,
-               haiku_engine=None, notification_engine=None) -> FastAPI:
+               notification_engine=None) -> FastAPI:
     """Create FastAPI app with ingress support."""
 
     # Strip trailing slashes from ingress path to avoid double-slash issues
@@ -104,7 +104,6 @@ def create_app(db, event_listener, mqtt_pub, registry=None, ml_engine=None,
             "mqtt_connected": mqtt_pub.connected,
             "registry_loaded": registry is not None and registry.entity_count > 0,
             "ml_active": ml_engine is not None and ml_engine.get_stats().get('ml_active', False),
-            "haiku_active": haiku_engine is not None and haiku_engine.active,
         }
 
     @app.get("/api/ml/stats")
@@ -254,26 +253,6 @@ def create_app(db, event_listener, mqtt_pub, registry=None, ml_engine=None,
             return {'error': 'target_id required'}
         return ml_engine.priors.get_prior(target_type, target_id)
 
-    # ── Haiku endpoints ──────────────────────────────────────────
-
-    @app.get("/api/haiku/status")
-    async def haiku_status():
-        """Get Haiku engine status and token usage."""
-        if not haiku_engine:
-            return {'error': 'Haiku engine not initialized', 'active': False}
-        return haiku_engine.get_status()
-
-    @app.get("/api/haiku/summary")
-    async def haiku_summary():
-        """Get the most recent household summary."""
-        if not haiku_engine:
-            return {'error': 'Haiku engine not initialized', 'summary': ''}
-        return {
-            'summary': haiku_engine._last_summary,
-            'source': haiku_engine._last_summary_source,
-            'time': haiku_engine._last_summary_time.isoformat() if haiku_engine._last_summary_time else None,
-        }
-
     return app
 
 
@@ -379,10 +358,6 @@ def get_dashboard_html() -> str:
   <div class="card">
     <h2>State Priors</h2>
     <div id="priors-info">Indlaeser...</div>
-  </div>
-  <div class="card">
-    <h2>Haiku AI</h2>
-    <div id="haiku-info">Indlaeser...</div>
   </div>
   <div class="card">
     <h2>Notifikationer</h2>
@@ -569,44 +544,6 @@ async function loadPriors() {
   } catch(e) { console.error('Priors error:', e); }
 }
 
-async function loadHaiku() {
-  try {
-    const h = await fetchJson('/api/haiku/status');
-    const el = document.getElementById('haiku-info');
-    const statusBadge = h.active
-      ? '<span class="badge green">Aktiv</span>'
-      : h.enabled
-        ? '<span class="badge orange">Venter</span>'
-        : '<span class="badge">Deaktiveret</span>';
-    const sourceBadge = h.last_summary_source === 'haiku'
-      ? '<span class="badge green">API</span>'
-      : h.last_summary_source === 'template'
-        ? '<span class="badge orange">Template</span>'
-        : '<span class="badge">-</span>';
-    const tokenPct = h.tokens_max_day > 0
-      ? ((h.tokens_used_today / h.tokens_max_day) * 100).toFixed(0)
-      : 0;
-    const lastTime = h.last_summary_time
-      ? new Date(h.last_summary_time).toLocaleString('da-DK')
-      : 'Ingen endnu';
-    el.innerHTML = `
-      <p>${statusBadge} Kilde: ${sourceBadge}</p>
-      <div class="mini-stat" style="margin-top:8px">
-        <div class="item"><span class="val">${h.tokens_used_today || 0}</span> <span class="lbl">tokens i dag</span></div>
-        <div class="item"><span class="val">${h.tokens_remaining || 0}</span> <span class="lbl">resterende</span></div>
-        <div class="item"><span class="val">${tokenPct}%</span> <span class="lbl">brugt</span></div>
-      </div>
-      <div class="mini-stat" style="margin-top:6px">
-        <div class="item"><span class="val">${h.api_calls_total || 0}</span> <span class="lbl">API kald</span></div>
-        <div class="item"><span class="val">${h.template_calls_total || 0}</span> <span class="lbl">template</span></div>
-      </div>
-      ${h.last_summary ? '<p style="margin-top:10px;font-size:12px;font-style:italic;color:var(--text-dim)">"' + h.last_summary.substring(0, 120) + (h.last_summary.length > 120 ? '...' : '') + '"</p>' : ''}
-      <p style="margin-top:6px;font-size:11px;color:var(--text-dim)">Opdateret: ${lastTime}</p>
-      ${h.last_error ? '<p style="margin-top:4px;font-size:11px;color:#e74c3c">Fejl: ' + h.last_error + '</p>' : ''}
-    `;
-  } catch(e) { console.error('Haiku error:', e); }
-}
-
 async function loadNotifications() {
   try {
     const n = await fetchJson('/api/notifications');
@@ -643,7 +580,7 @@ async function loadNotifications() {
 }
 
 function loadAll() {
-  loadStats(); loadRooms(); loadPersons(); loadEvents(); loadML(); loadPriors(); loadHaiku(); loadNotifications();
+  loadStats(); loadRooms(); loadPersons(); loadEvents(); loadML(); loadPriors(); loadNotifications();
 }
 
 loadAll();
