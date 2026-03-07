@@ -58,6 +58,8 @@ class Database:
             ("discovered_entities", "device_class", "TEXT"),
             ("discovered_entities", "platform", "TEXT"),
             ("discovered_entities", "device_id", "TEXT"),
+            ("rooms", "enabled", "INTEGER DEFAULT 1"),
+            ("persons", "enabled", "INTEGER DEFAULT 1"),
         ]
         for table, column, col_type in migrations:
             try:
@@ -243,7 +245,10 @@ class Database:
             (area_id, name, slug)
         )
 
-    def get_rooms(self) -> list:
+    def get_rooms(self, enabled_only: bool = True) -> list:
+        if enabled_only:
+            return self.execute(
+                "SELECT * FROM rooms WHERE enabled = 1", fetch=True)
         return self.execute("SELECT * FROM rooms", fetch=True)
 
     # ── Persons ─────────────────────────────────────────────────
@@ -257,8 +262,21 @@ class Database:
             (entity_id, name, slug)
         )
 
-    def get_persons(self) -> list:
+    def get_persons(self, enabled_only: bool = True) -> list:
+        if enabled_only:
+            return self.execute(
+                "SELECT * FROM persons WHERE enabled = 1", fetch=True)
         return self.execute("SELECT * FROM persons", fetch=True)
+
+    def set_room_enabled(self, slug: str, enabled: bool) -> int:
+        return self.execute(
+            "UPDATE rooms SET enabled = ? WHERE slug = ?",
+            (1 if enabled else 0, slug))
+
+    def set_person_enabled(self, slug: str, enabled: bool) -> int:
+        return self.execute(
+            "UPDATE persons SET enabled = ? WHERE slug = ?",
+            (1 if enabled else 0, slug))
 
     # ── Config ──────────────────────────────────────────────────
 
