@@ -1,7 +1,10 @@
 ARG BUILD_FROM
 FROM ${BUILD_FROM}
 
-# Install build dependencies for River (C extensions), compile, then clean up
+# Install scikit-learn via Alpine package (pre-built for ARM — pip compilation fails)
+RUN apk add --no-cache py3-scikit-learn
+
+# Install remaining Python deps (River needs C compilation)
 COPY requirements.txt /tmp/
 RUN apk add --no-cache --virtual .build-deps \
         gcc musl-dev g++ libffi-dev \
@@ -26,6 +29,6 @@ LABEL \
     io.hass.name="HA Intelligence" \
     io.hass.description="Self-learning household intelligence system" \
     io.hass.type="addon" \
-    io.hass.version="0.7.0"
+    io.hass.version="0.7.1"
 
 CMD ["python3", "/app/main.py"]
