@@ -29,6 +29,7 @@ try:
     from database import Database
     from discovery import Discovery
     from event_listener import EventListener
+    from feedback_engine import FeedbackEngine
     from ml_engine import MLEngine
     from mqtt_publisher import MQTTPublisher
     from notifications import NotificationEngine
@@ -89,13 +90,15 @@ class SensorEngine:
 
     def __init__(self, db: Database, mqtt: MQTTPublisher, discovery: Discovery,
                  registry: Registry = None, ml_engine: MLEngine = None,
-                 notification_engine: 'NotificationEngine' = None):
+                 notification_engine: 'NotificationEngine' = None,
+                 feedback_engine: 'FeedbackEngine' = None):
         self.db = db
         self.mqtt = mqtt
         self.discovery = discovery
         self.registry = registry
         self.ml_engine = ml_engine
         self.notification_engine = notification_engine
+        self.feedback_engine = feedback_engine
         self._room_states = {}   # area_id -> last known state info
         self._person_states = {} # entity_id -> last known state info
         self._tracker_to_person = {}  # device_tracker entity_id -> person entity_id
@@ -528,6 +531,12 @@ class SensorEngine:
                 method=source,
             )
 
+            # Ask user if confidence is low
+            if self.feedback_engine and self.feedback_engine.should_ask(confidence):
+                pred_id = self._last_predictions.get(target)
+                self.feedback_engine.ask_room_state(
+                    room['slug'], room['name'], confidence, pred_id)
+
             self.mqtt.publish_room(
                 slug=room['slug'],
                 name=room['name'],
@@ -840,6 +849,18 @@ class SensorEngine:
         )
 
 
+# ── Periodic helpers ─────────────────────────────────────────────
+
+async def periodic_feedback_status(feedback_engine):
+    """Publish feedback status every 60 seconds."""
+    while True:
+        try:
+            feedback_engine.publish_status()
+        except Exception as e:
+            logger.error(f"Feedback status error: {e}")
+        await asyncio.sleep(60)
+
+
 # ── Main ────────────────────────────────────────────────────────
 
 async def main():
@@ -888,9 +909,19 @@ async def main():
     notification_engine = NotificationEngine(options, mqtt_publisher=mqtt)
     logger.info(f"Notification engine initialized (active={notification_engine.active})")
 
+    # Initialize feedback engine
+    feedback_engine = FeedbackEngine(
+        options, db=db, mqtt_publisher=mqtt,
+        ml_engine=ml_engine, notification_engine=notification_engine)
+    logger.info("Feedback engine initialized")
+
+    # Subscribe to feedback answers
+    mqtt.subscribe_feedback(feedback_engine.on_feedback_message)
+
     sensor_engine = SensorEngine(
         db, mqtt, discovery, registry=registry, ml_engine=ml_engine,
         notification_engine=notification_engine,
+        feedback_engine=feedback_engine,
     )
 
     # Initialize BLE person-room tracking from config
@@ -913,7 +944,8 @@ async def main():
 
     # Create web app
     app = create_app(db, event_listener, mqtt, registry=registry, ml_engine=ml_engine,
-                     notification_engine=notification_engine)
+                     notification_engine=notification_engine,
+                     feedback_engine=feedback_engine)
 
     # Start all tasks
     loop = asyncio.get_event_loop()
@@ -947,6 +979,7 @@ async def main():
         asyncio.create_task(ml_engine.models.periodic_save()),
         asyncio.create_task(ml_engine.priors.nightly_job()),
         asyncio.create_task(ml_engine.models.nightly_batch_training()),
+        asyncio.create_task(periodic_feedback_status(feedback_engine)),
         asyncio.create_task(server.serve()),
     ]
 
