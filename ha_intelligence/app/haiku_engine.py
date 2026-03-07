@@ -61,7 +61,7 @@ class HaikuEngine:
     - Feature flags: anomaly, low_confidence, daily_summary, energy
     """
 
-    VERSION = '0.7.2'
+    VERSION = '0.7.3'
 
     def __init__(self, options: dict, db=None, ml_engine=None):
         self.db = db

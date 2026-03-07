@@ -99,7 +99,7 @@ def create_app(db, event_listener, mqtt_pub, registry=None, ml_engine=None,
     async def health():
         return {
             "status": "ok",
-            "version": "0.7.2",
+            "version": "0.7.3",
             "ws_connected": event_listener.connected,
             "mqtt_connected": mqtt_pub.connected,
             "registry_loaded": registry is not None and registry.entity_count > 0,
@@ -352,7 +352,7 @@ def get_dashboard_html() -> str:
 
 <h1>
   <span class="icon">&#129504;</span> HA Intelligence
-  <span class="version">v0.7.2</span>
+  <span class="version">v0.7.3</span>
   <span style="flex:1"></span>
   <button class="refresh-btn" onclick="loadAll()">Opdater</button>
 </h1>
@@ -383,6 +383,10 @@ def get_dashboard_html() -> str:
   <div class="card">
     <h2>Haiku AI</h2>
     <div id="haiku-info">Indlaeser...</div>
+  </div>
+  <div class="card">
+    <h2>Notifikationer</h2>
+    <div id="notify-info">Indlaeser...</div>
   </div>
 </div>
 
@@ -603,8 +607,43 @@ async function loadHaiku() {
   } catch(e) { console.error('Haiku error:', e); }
 }
 
+async function loadNotifications() {
+  try {
+    const n = await fetchJson('/api/notifications');
+    const el = document.getElementById('notify-info');
+    const statusBadge = n.active
+      ? (n.is_quiet
+        ? '<span class="badge orange">Stille timer</span>'
+        : n.can_send
+          ? '<span class="badge green">Aktiv</span>'
+          : '<span class="badge orange">Cooldown</span>')
+      : '<span class="badge">Deaktiveret</span>';
+    const history = n.history || [];
+    const historyHtml = history.length
+      ? '<ul class="list" style="margin-top:10px">' + history.slice().reverse().map(h => {
+          const ts = new Date(h[0]).toLocaleTimeString('da-DK');
+          const typeBadge = h[1] === 'anomaly' ? 'badge purple'
+            : h[1] === 'prediction' ? 'badge green'
+            : h[1] === 'low_confidence' ? 'badge orange'
+            : 'badge';
+          return `<li><span style="font-size:12px">${ts} <span class="${typeBadge}">${h[1]}</span></span><span style="font-size:11px;color:var(--text-dim);max-width:60%;text-align:right">${h[2].substring(0, 80)}</span></li>`;
+        }).join('') + '</ul>'
+      : '<p style="margin-top:10px;font-size:12px;color:var(--text-dim)">Ingen notifikationer endnu</p>';
+    el.innerHTML = `
+      <p>${statusBadge}</p>
+      <div class="mini-stat" style="margin-top:8px">
+        <div class="item"><span class="val">${n.sent_today || 0}</span> <span class="lbl">sendt i dag</span></div>
+        <div class="item"><span class="val">${n.max_daily || 0}</span> <span class="lbl">maks dagligt</span></div>
+        <div class="item"><span class="val">${n.cooldown_min || 0}m</span> <span class="lbl">cooldown</span></div>
+      </div>
+      <p style="margin-top:6px;font-size:11px;color:var(--text-dim)">Stille timer: ${n.quiet_hours || '-'}</p>
+      ${historyHtml}
+    `;
+  } catch(e) { console.error('Notifications error:', e); }
+}
+
 function loadAll() {
-  loadStats(); loadRooms(); loadPersons(); loadEvents(); loadML(); loadPriors(); loadHaiku();
+  loadStats(); loadRooms(); loadPersons(); loadEvents(); loadML(); loadPriors(); loadHaiku(); loadNotifications();
 }
 
 loadAll();
