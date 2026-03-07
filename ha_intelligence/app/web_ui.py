@@ -92,7 +92,7 @@ def create_app(db, event_listener, mqtt_pub, registry=None, ml_engine=None) -> F
     async def health():
         return {
             "status": "ok",
-            "version": "0.4.2",
+            "version": "0.5.0",
             "ws_connected": event_listener.connected,
             "mqtt_connected": mqtt_pub.connected,
             "registry_loaded": registry is not None and registry.entity_count > 0,
@@ -132,7 +132,69 @@ def create_app(db, event_listener, mqtt_pub, registry=None, ml_engine=None) -> F
                 'samples_seen': model.samples_seen,
                 'active': model.samples_seen >= 50,
             })
-        return {'room_models': room_list, 'person_models': person_list}
+        markov_list = []
+        for person_id, model in ml_engine.models.markov_models.items():
+            markov_list.append({
+                'person_id': person_id,
+                'total_transitions': model.total_transitions,
+                'rooms_tracked': len(model.transitions),
+            })
+        anomaly_list = []
+        for area_id, model in ml_engine.models.anomaly_models.items():
+            stats = model.get_stats()
+            anomaly_list.append({
+                'area_id': area_id,
+                'samples_seen': model.samples_seen,
+                'anomalies_detected': model.anomalies_detected,
+                'ready': stats.get('ready', False),
+            })
+        return {
+            'room_models': room_list,
+            'person_models': person_list,
+            'markov_models': markov_list,
+            'anomaly_models': anomaly_list,
+        }
+
+    @app.get("/api/ml/markov/{person_id}")
+    async def ml_markov(person_id: str):
+        """Get Markov movement predictions for a person."""
+        if not ml_engine:
+            return {'error': 'ML engine not initialized'}
+        entity = f'person.{person_id}' if not person_id.startswith('person.') else person_id
+        markov = ml_engine.models.markov_models.get(entity)
+        if not markov:
+            return {'error': f'No Markov model for {entity}', 'predictions': []}
+        # Get current room from ML engine
+        best_room = ml_engine.get_person_best_room(entity)
+        current_room = best_room['room'] if best_room else None
+        predictions = []
+        if current_room:
+            result = ml_engine.predict_next_room(entity, current_room)
+            if result:
+                predictions = [{'room': r, 'probability': round(p, 3)} for r, p in result]
+        return {
+            'person_id': entity,
+            'current_room': current_room,
+            'total_transitions': markov.total_transitions,
+            'predictions': predictions,
+        }
+
+    @app.get("/api/ml/anomaly/{area_id}")
+    async def ml_anomaly(area_id: str):
+        """Get anomaly detection stats for a room."""
+        if not ml_engine:
+            return {'error': 'ML engine not initialized'}
+        score_info = ml_engine.get_anomaly_score(area_id)
+        if not score_info:
+            return {'error': f'No anomaly model for {area_id}'}
+        return {'area_id': area_id, **score_info}
+
+    @app.get("/api/ml/batch")
+    async def ml_batch():
+        """Get batch training status and results."""
+        if not ml_engine or not ml_engine.models.batch_trainer:
+            return {'error': 'Batch trainer not available'}
+        return ml_engine.models.batch_trainer.get_stats()
 
     @app.get("/api/predictions/recent")
     async def recent_predictions(limit: int = 20):
@@ -262,7 +324,7 @@ def get_dashboard_html() -> str:
 
 <h1>
   <span class="icon">&#129504;</span> HA Intelligence
-  <span class="version">v0.4.2</span>
+  <span class="version">v0.5.0</span>
   <span style="flex:1"></span>
   <button class="refresh-btn" onclick="loadAll()">Opdater</button>
 </h1>
@@ -419,17 +481,34 @@ async function loadML() {
     const accBadge = accTotal > 0
       ? `<span class="badge ${accPct >= 70 ? 'green' : accPct >= 40 ? 'orange' : ''}">${accPct}%</span>`
       : '<span class="badge">-</span>';
+    const markovCount = ml.markov_models || 0;
+    const anomalyCount = ml.anomaly_models || 0;
+    const totalTransitions = ml.total_transitions || 0;
+    const totalAnomalies = ml.total_anomalies || 0;
+    const batch = ml.batch || {};
+    const batchTrained = batch.last_trained ? new Date(batch.last_trained).toLocaleString('da-DK') : null;
     el.innerHTML = `
       <p>${statusBadge} ${ml.total_samples || 0} samples (threshold: ${ml.ml_threshold || 50})</p>
       <div class="mini-stat" style="margin-top:8px">
-        <div class="item"><span class="val">${ml.room_models || 0}</span> <span class="lbl">rum-modeller</span></div>
-        <div class="item"><span class="val">${ml.person_models || 0}</span> <span class="lbl">person-modeller</span></div>
+        <div class="item"><span class="val">${ml.room_models || 0}</span> <span class="lbl">rum</span></div>
+        <div class="item"><span class="val">${ml.person_models || 0}</span> <span class="lbl">person</span></div>
+        <div class="item"><span class="val">${markovCount}</span> <span class="lbl">markov</span></div>
+        <div class="item"><span class="val">${anomalyCount}</span> <span class="lbl">anomaly</span></div>
       </div>
       <p style="margin-top:10px">Accuracy: ${accBadge} <span style="font-size:12px;color:var(--text-dim)">${accCorrect}/${accTotal} predictions</span></p>
+      <div class="mini-stat" style="margin-top:6px">
+        <div class="item"><span class="val">${totalTransitions}</span> <span class="lbl">transitions</span></div>
+        <div class="item"><span class="val">${totalAnomalies}</span> <span class="lbl">anomalier</span></div>
+      </div>
+      ${batchTrained ? '<p style="margin-top:6px;font-size:11px;color:var(--text-dim)">Batch: ' + batchTrained + ' (' + (batch.room_models||0) + ' rum, ' + (batch.person_models||0) + ' person)</p>' : ''}
       ${(models.room_models||[]).length ? '<p style="margin-top:8px;font-size:12px;color:var(--text-dim)">Rum: ' +
         models.room_models.map(m => m.area_id + ' (' + m.samples_seen + ')').join(', ') + '</p>' : ''}
       ${(models.person_models||[]).length ? '<p style="margin-top:4px;font-size:12px;color:var(--text-dim)">Person: ' +
         models.person_models.map(m => m.person_id.replace('person.','') + ' (' + m.samples_seen + ')').join(', ') + '</p>' : ''}
+      ${(models.markov_models||[]).length ? '<p style="margin-top:4px;font-size:12px;color:var(--text-dim)">Markov: ' +
+        models.markov_models.map(m => m.person_id.replace('person.','') + ' (' + m.total_transitions + ' trans)').join(', ') + '</p>' : ''}
+      ${(models.anomaly_models||[]).length ? '<p style="margin-top:4px;font-size:12px;color:var(--text-dim)">Anomaly: ' +
+        models.anomaly_models.map(m => m.area_id + ' (' + m.samples_seen + (m.anomalies_detected ? ', ' + m.anomalies_detected + ' anom' : '') + ')').join(', ') + '</p>' : ''}
     `;
   } catch(e) { console.error('ML error:', e); }
 }

@@ -80,6 +80,7 @@ class SensorEngine:
         self._tracker_to_person = {}  # device_tracker entity_id -> person entity_id
         self._person_rooms = {}  # person_entity -> {area_id, area_name, confidence, source, distance, updated_at}
         self._bermuda_to_person = {}  # bermuda_sensor_entity -> person_entity
+        self._netatmo_to_person = {}  # 'troels' -> 'person.troels' (Netatmo camera face detection)
         self._publish_interval = 60  # seconds
         self._stale_threshold = timedelta(minutes=30)
         self._last_predictions = {}  # sensor_target -> prediction_id (for feedback loop)
@@ -147,6 +148,10 @@ class SensorEngine:
         # Track device_tracker → person state
         if domain == 'device_tracker':
             self._update_tracker_state(entity_id, new_state, attributes)
+
+        # Phase 4: Netatmo camera face detection → person room (highest confidence)
+        if entity_id.startswith('input_text.netatmo_sidst_set_'):
+            self._handle_netatmo_update(entity_id, new_state)
 
     def _update_room_state(self, area_id: str, sensor_id: str, state: str):
         """Update room state based on motion/occupancy sensor."""
@@ -257,6 +262,81 @@ class SensorEngine:
                 f"Person {person_entity} moved: {prev_area} → {area_id} "
                 f"(source={source}, confidence={confidence:.2f})"
             )
+
+    def init_netatmo_mapping(self, persons: list):
+        """Initialize Netatmo person name → person entity mapping.
+
+        Netatmo entities follow pattern: input_text.netatmo_sidst_set_<name>
+        State format: 'room_name|ISO_timestamp'
+
+        Args:
+            persons: List of person dicts from DB (with 'slug' and 'entity_id')
+        """
+        for p in persons:
+            slug = p.get('slug', '')
+            entity_id = p.get('entity_id', '')
+            if slug and entity_id:
+                self._netatmo_to_person[slug] = entity_id
+        logger.info(f"Netatmo mapping configured for {len(self._netatmo_to_person)} persons")
+
+    def _handle_netatmo_update(self, entity_id: str, state: str):
+        """Handle Netatmo camera face detection state change.
+
+        Entity: input_text.netatmo_sidst_set_<name>
+        State format: 'room_name|ISO_timestamp'
+        """
+        try:
+            # Extract person name from entity_id
+            name = entity_id.replace('input_text.netatmo_sidst_set_', '')
+
+            # Parse state: "room|timestamp"
+            if '|' not in state:
+                return
+            parts = state.split('|', 1)
+            room = parts[0].strip()
+            timestamp = parts[1].strip()
+
+            if not room or not timestamp:
+                return
+
+            # Resolve person entity
+            person_entity = self._netatmo_to_person.get(name)
+            if not person_entity:
+                logger.debug(f"Netatmo: unknown person '{name}'")
+                return
+
+            # Forward to ML engine
+            if self.ml_engine:
+                self.ml_engine.update_netatmo_room(
+                    person_entity, room, timestamp
+                )
+                logger.debug(
+                    f"Netatmo camera: {person_entity} seen in {room} "
+                    f"at {timestamp}"
+                )
+
+            # Also update person room tracking (high confidence)
+            # Map room name to area_id if possible
+            area_id = room  # Default: use room name as area_id
+            area_name = room
+            if self.registry:
+                # Try to find matching area
+                for eid, aid in self.registry._area_map.items():
+                    if aid.lower() == room.lower():
+                        area_id = aid
+                        break
+
+            self._update_person_room(
+                person_entity=person_entity,
+                area_id=area_id,
+                area_name=area_name,
+                confidence=0.95,
+                source='netatmo_camera',
+                distance=None,
+            )
+
+        except Exception as e:
+            logger.debug(f"Netatmo parse error for {entity_id}: {e}")
 
     def _infer_room_from_motion(self, person_entity: str) -> dict:
         """Motion fallback: infer room from most recently active motion sensor.
@@ -396,6 +476,13 @@ class SensorEngine:
             if self.ml_engine:
                 prior_info = self.ml_engine.priors.get_prior('room', area_id)
 
+            # Phase 4: Anomaly detection
+            anomaly_info = {'score': None, 'ready': False, 'anomalies_detected': 0}
+            if self.ml_engine:
+                anomaly_stats = self.ml_engine.get_anomaly_score(area_id)
+                if anomaly_stats:
+                    anomaly_info = anomaly_stats
+
             # Feedback loop: close previous prediction with current actual state
             target = f'room_{area_id}'
             prev_id = self._last_predictions.get(target)
@@ -438,6 +525,10 @@ class SensorEngine:
                     'prior_state': prior_info.get('best_state'),
                     'prior_probability': prior_info.get('best_probability', 0.0),
                     'prior_available': prior_info.get('has_data', False),
+                    # Phase 4: Anomaly detection
+                    'anomaly_score': anomaly_info.get('score'),
+                    'anomaly_ready': anomaly_info.get('ready', False),
+                    'anomalies_detected': anomaly_info.get('anomalies_detected', 0),
                 }
             )
 
@@ -517,8 +608,24 @@ class SensorEngine:
             if self.ml_engine:
                 person_prior_info = self.ml_engine.priors.get_prior('person', person_slug)
 
+            # Phase 4: Best room from ML engine (merges Netatmo + BLE)
+            best_room_ml = None
+            if self.ml_engine:
+                best_room_ml = self.ml_engine.get_person_best_room(entity_id)
+
             # BLE room data with motion fallback
             room_data = self._person_rooms.get(entity_id, {})
+
+            # Phase 4: If ML engine has a better room estimate, use it
+            if best_room_ml and best_room_ml.get('confidence', 0) > room_data.get('confidence', 0):
+                room_data = {
+                    'area_id': best_room_ml['room'],
+                    'area_name': best_room_ml['room'],
+                    'confidence': best_room_ml['confidence'],
+                    'source': best_room_ml['source'],
+                    'distance': None,
+                }
+
             if not room_data or room_data.get('confidence', 0) < 0.2:
                 # Try motion fallback for home persons without BLE
                 if is_home:
@@ -543,6 +650,17 @@ class SensorEngine:
                     )
                 except (ValueError, TypeError):
                     pass
+
+            # Phase 4: Markov movement prediction
+            predicted_next_room = None
+            next_room_probability = 0.0
+            if self.ml_engine and room_id and is_home:
+                markov_result = self.ml_engine.predict_next_room(
+                    entity_id, room_id
+                )
+                if markov_result and len(markov_result) > 0:
+                    predicted_next_room = markov_result[0][0]
+                    next_room_probability = round(markov_result[0][1], 3)
 
             self.mqtt.publish_person(
                 slug=person['slug'],
@@ -570,6 +688,9 @@ class SensorEngine:
                     'prior_state': person_prior_info.get('best_state'),
                     'prior_probability': person_prior_info.get('best_probability', 0.0),
                     'prior_available': person_prior_info.get('has_data', False),
+                    # Phase 4: Markov movement prediction
+                    'predicted_next_room': predicted_next_room,
+                    'next_room_probability': next_room_probability,
                 }
             )
 
@@ -599,7 +720,19 @@ class SensorEngine:
                 'ml_person_models': ml_stats.get('person_models', 0),
                 'ml_total_samples': ml_stats.get('total_samples', 0),
                 'ml_threshold': ml_stats.get('ml_threshold', 50),
+                # Phase 4: Markov, anomaly, batch stats
+                'ml_markov_models': ml_stats.get('markov_models', 0),
+                'ml_anomaly_models': ml_stats.get('anomaly_models', 0),
+                'ml_total_transitions': ml_stats.get('total_transitions', 0),
+                'ml_total_anomaly_samples': ml_stats.get('total_anomaly_samples', 0),
+                'ml_total_anomalies': ml_stats.get('total_anomalies', 0),
             }
+            # Batch training stats
+            batch_stats = ml_stats.get('batch')
+            if batch_stats:
+                ml_info['batch_room_models'] = batch_stats.get('room_models', 0)
+                ml_info['batch_person_models'] = batch_stats.get('person_models', 0)
+                ml_info['batch_last_trained'] = batch_stats.get('last_trained')
 
         # Prediction accuracy stats
         try:
@@ -627,7 +760,7 @@ class SensorEngine:
         self.mqtt.publish_system_status(
             status=status,
             attributes={
-                'version': '0.4.2',
+                'version': '0.5.0',
                 'events_24h': stats['events_24h'],
                 'events_total': stats['events_total'],
                 'entities_discovered': stats['entities_discovered'],
@@ -723,7 +856,7 @@ class SensorEngine:
 
 async def main():
     logger.info("=" * 50)
-    logger.info("HA Intelligence v0.4.1 starting...")
+    logger.info("HA Intelligence v0.5.0 starting...")
     logger.info("=" * 50)
 
     # Load config
@@ -776,6 +909,9 @@ async def main():
         except (json.JSONDecodeError, TypeError) as e:
             logger.error(f"Failed to parse bermuda_sensors config: {e}")
 
+    # Initialize Netatmo camera face detection mapping
+    sensor_engine.init_netatmo_mapping()
+
     event_listener = EventListener(
         db, registry=registry,
         on_state_change=sensor_engine.on_state_change
@@ -815,6 +951,7 @@ async def main():
         asyncio.create_task(sensor_engine.periodic_maintenance()),
         asyncio.create_task(ml_engine.models.periodic_save()),
         asyncio.create_task(ml_engine.priors.nightly_job()),
+        asyncio.create_task(ml_engine.models.nightly_batch_training()),
         asyncio.create_task(server.serve()),
     ]
 
