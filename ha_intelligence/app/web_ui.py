@@ -14,7 +14,8 @@ INGRESS_PATH = os.environ.get('INGRESS_PATH', '')
 
 
 def create_app(db, event_listener, mqtt_pub, registry=None, ml_engine=None,
-               notification_engine=None) -> FastAPI:
+               notification_engine=None, feedback_engine=None,
+               activity_engine=None) -> FastAPI:
     """Create FastAPI app with ingress support."""
 
     # Strip trailing slashes from ingress path to avoid double-slash issues
@@ -56,11 +57,11 @@ def create_app(db, event_listener, mqtt_pub, registry=None, ml_engine=None,
 
     @app.get("/api/rooms")
     async def rooms():
-        return db.get_rooms()
+        return db.get_rooms(enabled_only=False)
 
     @app.get("/api/persons")
     async def persons():
-        return db.get_persons()
+        return db.get_persons(enabled_only=False)
 
     @app.get("/api/entities")
     async def entities(domain: str = None, limit: int = 50):
@@ -252,6 +253,67 @@ def create_app(db, event_listener, mqtt_pub, registry=None, ml_engine=None,
         if not target_id:
             return {'error': 'target_id required'}
         return ml_engine.priors.get_prior(target_type, target_id)
+
+    # --- Toggle endpoints ---
+
+    @app.post("/api/rooms/{slug}/toggle")
+    async def toggle_room(slug: str):
+        rooms = db.get_rooms(enabled_only=False)
+        room = next((r for r in rooms if r['slug'] == slug), None)
+        if not room:
+            return {"error": "Room not found"}
+        new_state = not bool(room.get('enabled', 1))
+        db.set_room_enabled(slug, new_state)
+        if not new_state:
+            mqtt_pub.remove_sensor(f"room_{slug}")
+        return {"slug": slug, "enabled": new_state}
+
+    @app.post("/api/persons/{slug}/toggle")
+    async def toggle_person(slug: str):
+        persons = db.get_persons(enabled_only=False)
+        person = next((p for p in persons if p['slug'] == slug), None)
+        if not person:
+            return {"error": "Person not found"}
+        new_state = not bool(person.get('enabled', 1))
+        db.set_person_enabled(slug, new_state)
+        if not new_state:
+            mqtt_pub.remove_sensor(f"person_{slug}")
+            mqtt_pub.remove_sensor(f"activity_{slug}")
+        return {"slug": slug, "enabled": new_state}
+
+    # --- Feedback endpoints ---
+
+    @app.get("/api/feedback/pending")
+    async def get_pending_feedback():
+        return db.get_pending_questions()
+
+    @app.post("/api/feedback/{question_id}")
+    async def answer_feedback(question_id: int, request: Request):
+        body = await request.json()
+        answer = body.get('answer', '')
+        if not answer:
+            return {"error": "Missing answer"}
+        if feedback_engine:
+            feedback_engine._process_answer(question_id, answer)
+        return {"ok": True, "question_id": question_id, "answer": answer}
+
+    @app.get("/api/feedback/stats")
+    async def get_feedback_stats():
+        if feedback_engine:
+            return feedback_engine.get_status()
+        return {"active": False}
+
+    # --- Activity endpoints ---
+
+    @app.get("/api/activities/current")
+    async def get_current_activities():
+        if activity_engine:
+            return activity_engine.get_current_activities()
+        return {}
+
+    @app.get("/api/activities/learned")
+    async def get_learned_activities():
+        return db.get_learned_activities()
 
     return app
 
