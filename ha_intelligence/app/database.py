@@ -278,6 +278,101 @@ class Database:
             "UPDATE persons SET enabled = ? WHERE slug = ?",
             (1 if enabled else 0, slug))
 
+    # ── Feedback Questions ───────────────────────────────────────
+
+    def create_feedback_question(self, question_type: str, target: str,
+                                  question_text: str, options: list,
+                                  prediction_id: int = None,
+                                  confidence: float = None) -> int:
+        return self.execute(
+            """INSERT INTO feedback_questions
+               (question_type, target, question_text, options,
+                prediction_id, confidence)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (question_type, target, question_text,
+             json.dumps(options), prediction_id, confidence))
+
+    def answer_feedback_question(self, question_id: int, answer: str):
+        self.execute(
+            """UPDATE feedback_questions
+               SET answered_at = datetime('now'), answer = ?
+               WHERE id = ?""",
+            (answer, question_id))
+
+    def get_pending_questions(self) -> list:
+        return self.execute(
+            """SELECT * FROM feedback_questions
+               WHERE answered_at IS NULL
+               ORDER BY created_at DESC""", fetch=True)
+
+    def get_feedback_stats(self) -> dict:
+        today = self.execute(
+            """SELECT COUNT(*) as cnt FROM feedback_questions
+               WHERE answered_at IS NOT NULL
+               AND date(answered_at) = date('now')""", fetch=True)
+        total = self.execute(
+            """SELECT COUNT(*) as cnt FROM feedback_questions
+               WHERE answered_at IS NOT NULL""", fetch=True)
+        pending = self.execute(
+            """SELECT COUNT(*) as cnt FROM feedback_questions
+               WHERE answered_at IS NULL""", fetch=True)
+        first = self.execute(
+            """SELECT MIN(created_at) as first_q FROM feedback_questions
+               WHERE answered_at IS NOT NULL""", fetch=True)
+        return {
+            'answered_today': today[0]['cnt'] if today else 0,
+            'answered_total': total[0]['cnt'] if total else 0,
+            'pending': pending[0]['cnt'] if pending else 0,
+            'first_answer_at': first[0]['first_q'] if first else None,
+        }
+
+    def get_question_by_id(self, question_id: int) -> dict | None:
+        rows = self.execute(
+            "SELECT * FROM feedback_questions WHERE id = ?",
+            (question_id,), fetch=True)
+        return rows[0] if rows else None
+
+    # ── Learned Activities ───────────────────────────────────────
+
+    def upsert_learned_activity(self, person: str, room: str, zone: str,
+                                 devices_state: dict, activity: str):
+        existing = self.execute(
+            """SELECT id, confirmed_count FROM learned_activities
+               WHERE person = ? AND room = ? AND zone = ?
+               AND devices_state = ? AND activity = ?""",
+            (person, room, zone or '', json.dumps(devices_state), activity),
+            fetch=True)
+        if existing:
+            self.execute(
+                """UPDATE learned_activities
+                   SET confirmed_count = confirmed_count + 1,
+                       last_confirmed = datetime('now')
+                   WHERE id = ?""",
+                (existing[0]['id'],))
+        else:
+            self.execute(
+                """INSERT INTO learned_activities
+                   (person, room, zone, devices_state, activity)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (person, room, zone or '', json.dumps(devices_state), activity))
+
+    def lookup_activity(self, person: str, room: str, zone: str,
+                         devices_state: dict) -> dict | None:
+        rows = self.execute(
+            """SELECT activity, confirmed_count FROM learned_activities
+               WHERE person = ? AND room = ? AND zone = ?
+               AND devices_state = ?
+               ORDER BY confirmed_count DESC LIMIT 1""",
+            (person, room, zone or '', json.dumps(devices_state)),
+            fetch=True)
+        return rows[0] if rows else None
+
+    def get_learned_activities(self, limit: int = 50) -> list:
+        return self.execute(
+            """SELECT * FROM learned_activities
+               ORDER BY last_confirmed DESC LIMIT ?""",
+            (limit,), fetch=True)
+
     # ── Config ──────────────────────────────────────────────────
 
     def get_config(self, key: str) -> str | None:
@@ -627,4 +722,33 @@ INSERT OR IGNORE INTO system_config (key, value) VALUES
     ('version', '0.3.2'),
     ('started_at', datetime('now')),
     ('confidence_threshold', '0.4');
+
+CREATE TABLE IF NOT EXISTS feedback_questions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at TEXT DEFAULT (datetime('now')),
+    question_type TEXT NOT NULL,
+    target TEXT NOT NULL,
+    question_text TEXT NOT NULL,
+    options TEXT DEFAULT '[]',
+    answered_at TEXT,
+    answer TEXT,
+    prediction_id INTEGER,
+    confidence REAL,
+    FOREIGN KEY (prediction_id) REFERENCES predictions(id)
+);
+CREATE INDEX IF NOT EXISTS idx_feedback_time ON feedback_questions(created_at);
+CREATE INDEX IF NOT EXISTS idx_feedback_type ON feedback_questions(question_type);
+
+CREATE TABLE IF NOT EXISTS learned_activities (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    person TEXT NOT NULL,
+    room TEXT NOT NULL,
+    zone TEXT,
+    devices_state TEXT DEFAULT '{}',
+    activity TEXT NOT NULL,
+    confirmed_count INTEGER DEFAULT 1,
+    last_confirmed TEXT DEFAULT (datetime('now')),
+    created_at TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_activity_lookup ON learned_activities(person, room, zone);
 """
