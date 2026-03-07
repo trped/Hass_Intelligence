@@ -29,6 +29,7 @@ try:
     from database import Database
     from discovery import Discovery
     from event_listener import EventListener
+    from activity_inference import ActivityInference
     from feedback_engine import FeedbackEngine
     from ml_engine import MLEngine
     from mqtt_publisher import MQTTPublisher
@@ -91,7 +92,8 @@ class SensorEngine:
     def __init__(self, db: Database, mqtt: MQTTPublisher, discovery: Discovery,
                  registry: Registry = None, ml_engine: MLEngine = None,
                  notification_engine: 'NotificationEngine' = None,
-                 feedback_engine: 'FeedbackEngine' = None):
+                 feedback_engine: 'FeedbackEngine' = None,
+                 activity_engine: 'ActivityInference' = None):
         self.db = db
         self.mqtt = mqtt
         self.discovery = discovery
@@ -99,6 +101,7 @@ class SensorEngine:
         self.ml_engine = ml_engine
         self.notification_engine = notification_engine
         self.feedback_engine = feedback_engine
+        self.activity_engine = activity_engine
         self._room_states = {}   # area_id -> last known state info
         self._person_states = {} # entity_id -> last known state info
         self._tracker_to_person = {}  # device_tracker entity_id -> person entity_id
@@ -918,10 +921,17 @@ async def main():
     # Subscribe to feedback answers
     mqtt.subscribe_feedback(feedback_engine.on_feedback_message)
 
+    # Initialize activity inference
+    activity_inference = ActivityInference(
+        options, db=db, mqtt_publisher=mqtt,
+        feedback_engine=feedback_engine)
+    logger.info("Activity inference initialized")
+
     sensor_engine = SensorEngine(
         db, mqtt, discovery, registry=registry, ml_engine=ml_engine,
         notification_engine=notification_engine,
         feedback_engine=feedback_engine,
+        activity_engine=activity_inference,
     )
 
     # Initialize BLE person-room tracking from config
@@ -945,7 +955,8 @@ async def main():
     # Create web app
     app = create_app(db, event_listener, mqtt, registry=registry, ml_engine=ml_engine,
                      notification_engine=notification_engine,
-                     feedback_engine=feedback_engine)
+                     feedback_engine=feedback_engine,
+                     activity_engine=activity_inference)
 
     # Start all tasks
     loop = asyncio.get_event_loop()
