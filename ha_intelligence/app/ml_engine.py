@@ -30,10 +30,15 @@ class MLEngine:
         self.models = ModelManager(db=db)
         self._executor = ThreadPoolExecutor(max_workers=2)
         self._person_rooms = {}  # person_entity -> room dict (synced from SensorEngine)
+        self._room_states = {}   # area_id -> room_state dict (synced from SensorEngine)
 
     def update_person_room(self, person_entity: str, room_data: dict):
         """Update BLE room data for a person (called from SensorEngine)."""
         self._person_rooms[person_entity] = room_data
+
+    def update_room_state(self, area_id: str, room_state: dict):
+        """Sync room state from SensorEngine for rich feature extraction."""
+        self._room_states[area_id] = room_state
 
     async def on_state_change(self, entity_id: str, old_state: str,
                                new_state: str, attributes: dict):
@@ -72,21 +77,24 @@ class MLEngine:
             )
 
     def _train_room(self, area_id: str, sensor_state: str):
-        """Train room occupancy model (runs in thread)."""
-        try:
-            from main import SensorEngine  # avoid circular at module level
-        except ImportError:
-            pass
+        """Train room occupancy model (runs in thread).
 
+        Uses the full room_state synced from SensorEngine (if available)
+        so features include actual sensor counts, EPL zones, lights, media etc.
+        Falls back to minimal state if sync hasn't happened yet.
+        """
         try:
             # Determine label from sensor state
             label = 'occupied' if sensor_state == 'on' else 'empty'
 
-            # Build room_state dict for feature extraction
-            room_state = {
-                'sensors': {f'_train_{area_id}': sensor_state},
-                'last_occupied': datetime.now(timezone.utc).isoformat() if sensor_state == 'on' else None,
-            }
+            # Phase 2: Use actual room_state from SensorEngine for rich features
+            room_state = self._room_states.get(area_id)
+            if not room_state:
+                # Fallback: minimal room_state (pre-sync or unknown room)
+                room_state = {
+                    'sensors': {f'_train_{area_id}': sensor_state},
+                    'last_occupied': datetime.now(timezone.utc).isoformat() if sensor_state == 'on' else None,
+                }
 
             features = self.features.extract_room_features(area_id, room_state)
             model = self.models.get_or_create_room_model(area_id)
@@ -188,6 +196,19 @@ class MLEngine:
         except Exception as e:
             logger.debug(f"Person predict error for {person_entity}: {e}")
             return None
+
+    def get_room_evidence(self, area_id: str, room_state: dict) -> dict:
+        """Analyze active evidence sources for a room.
+
+        Returns dict with sources, count, detail for publishing
+        as room sensor attributes.
+        """
+        try:
+            features = self.features.extract_room_features(area_id, room_state)
+            return self.features.analyze_evidence(features)
+        except Exception as e:
+            logger.debug(f"Evidence analysis error for {area_id}: {e}")
+            return {'sources': [], 'count': 0, 'detail': {}}
 
     def get_stats(self) -> dict:
         """Get ML engine stats."""

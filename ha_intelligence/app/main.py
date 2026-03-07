@@ -159,6 +159,9 @@ class SensorEngine:
             self._room_states[area_id]['last_occupied'] = (
                 datetime.now(timezone.utc).isoformat()
             )
+        # Phase 2: Sync room state to ML engine for rich feature extraction
+        if self.ml_engine:
+            self.ml_engine.update_room_state(area_id, self._room_states[area_id])
 
     def _update_person_state(self, entity_id: str, state: str, attrs: dict):
         """Update person state from person entity."""
@@ -383,6 +386,11 @@ class SensorEngine:
                 state = rule_state
                 confidence = rule_confidence
 
+            # Phase 2: Evidence analysis
+            evidence = {'sources': [], 'count': 0, 'detail': {}}
+            if self.ml_engine:
+                evidence = self.ml_engine.get_room_evidence(area_id, room_info)
+
             # Feedback loop: close previous prediction with current actual state
             target = f'room_{area_id}'
             prev_id = self._last_predictions.get(target)
@@ -417,6 +425,10 @@ class SensorEngine:
                     'ml_state': ml_state,
                     'ml_confidence': ml_confidence,
                     'ml_samples': ml_samples,
+                    # Phase 2: Evidence sources
+                    'evidence_sources': evidence['sources'],
+                    'evidence_count': evidence['count'],
+                    'evidence_detail': evidence['detail'],
                 }
             )
 
@@ -585,7 +597,7 @@ class SensorEngine:
         self.mqtt.publish_system_status(
             status=status,
             attributes={
-                'version': '0.4.0',
+                'version': '0.4.1',
                 'events_24h': stats['events_24h'],
                 'events_total': stats['events_total'],
                 'entities_discovered': stats['entities_discovered'],
@@ -681,7 +693,7 @@ class SensorEngine:
 
 async def main():
     logger.info("=" * 50)
-    logger.info("HA Intelligence v0.4.0 starting...")
+    logger.info("HA Intelligence v0.4.1 starting...")
     logger.info("=" * 50)
 
     # Load config

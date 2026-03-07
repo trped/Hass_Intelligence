@@ -6,6 +6,7 @@ River online ML models. All features are returned as dict[str, float|int].
 
 import math
 import logging
+import re
 from collections import defaultdict
 from datetime import datetime, timezone, timedelta
 from typing import Optional
@@ -13,6 +14,9 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 TWO_PI = 2 * math.pi
+
+# Pattern for EPL zone attributes (zone1_target_count, zone2_target_count, etc.)
+EPL_ZONE_RE = re.compile(r'zone(\d+)_target_count')
 
 
 class FeatureExtractor:
@@ -165,6 +169,68 @@ class FeatureExtractor:
 
         return features
 
+    # ── Evidence analysis ─────────────────────────────────────────
+
+    @staticmethod
+    def analyze_evidence(features: dict) -> dict:
+        """Analyze which evidence sources are active in a feature vector.
+
+        Returns dict with:
+            - sources: list of active evidence type names
+            - count: number of active sources
+            - detail: dict of source -> value pairs
+        """
+        sources = []
+        detail = {}
+
+        # Motion sensors
+        active = features.get('sensors_active', 0)
+        if active > 0:
+            sources.append('motion')
+            detail['motion'] = active
+
+        # EPL zones
+        epl_targets = features.get('epl_total_targets', 0)
+        if epl_targets > 0:
+            sources.append('epl_zone')
+            detail['epl_zone'] = epl_targets
+
+        # Lights
+        lights_on = features.get('lights_on', 0)
+        if lights_on > 0:
+            sources.append('light')
+            detail['light'] = lights_on
+
+        # Media
+        media_active = features.get('media_active', 0)
+        media_playing = features.get('media_playing', 0)
+        if media_active > 0 or media_playing > 0:
+            sources.append('media')
+            detail['media'] = media_playing or media_active
+
+        # TV power
+        if features.get('tv_active', 0):
+            if 'media' not in sources:
+                sources.append('media')
+            detail['tv_watts'] = features.get('tv_power_watts', 0)
+
+        # Climate
+        climate_on = features.get('climate_on', 0)
+        if climate_on > 0:
+            sources.append('climate')
+            detail['climate'] = climate_on
+
+        # CO2
+        if features.get('co2_elevated', 0):
+            sources.append('co2')
+            detail['co2_ppm'] = features.get('co2_ppm', 0)
+
+        return {
+            'sources': sources,
+            'count': len(sources),
+            'detail': detail,
+        }
+
     # ── Motion tracking ──────────────────────────────────────────
 
     def update_motion_tracking(self, area_id: str,
@@ -225,6 +291,11 @@ class FeatureExtractor:
         fans_total = 0
         binary_on = defaultdict(int)   # device_class -> count on
         binary_total = defaultdict(int)  # device_class -> count total
+        # Phase 2: EPL zone tracking, TV power, CO2
+        epl_zones = {}  # zone_num -> target_count
+        epl_assumed_present = 0
+        tv_power_watts = None
+        co2_ppm = None
 
         for eid in entities:
             ctx = self._context_states.get(eid)
@@ -258,6 +329,12 @@ class FeatureExtractor:
                     value = float(state)
                     dc = attrs.get('device_class', 'generic')
                     sensor_values[dc].append(value)
+                    # Phase 2: TV power detection (power sensors with 'tv' in name)
+                    if dc == 'power' and 'tv' in eid.lower():
+                        tv_power_watts = value
+                    # Phase 2: CO2 detection
+                    if dc == 'carbon_dioxide':
+                        co2_ppm = value
                 except (ValueError, TypeError):
                     pass
 
@@ -289,6 +366,23 @@ class FeatureExtractor:
                 binary_total[dc] += 1
                 if state == 'on':
                     binary_on[dc] += 1
+                # Phase 2: Extract EPL zone data from mmWave attributes
+                if 'epl' in eid or 'mmwave' in eid:
+                    for attr_key, attr_val in attrs.items():
+                        m = EPL_ZONE_RE.match(attr_key)
+                        if m:
+                            zone_num = int(m.group(1))
+                            try:
+                                epl_zones[zone_num] = int(attr_val)
+                            except (ValueError, TypeError):
+                                pass
+                    # assumed_present from EPL sensor
+                    ap = attrs.get('assumed_present')
+                    if ap is not None:
+                        try:
+                            epl_assumed_present = max(epl_assumed_present, int(ap))
+                        except (ValueError, TypeError):
+                            pass
 
         # ── Aggregate features ──
 
@@ -359,5 +453,30 @@ class FeatureExtractor:
             prefix = f'bs_{dc}'
             features[f'{prefix}_total'] = binary_total[dc]
             features[f'{prefix}_on'] = binary_on[dc]
+
+        # Phase 2: EPL zone features
+        if epl_zones:
+            total_targets = 0
+            for zone_num in sorted(epl_zones.keys()):
+                count = epl_zones[zone_num]
+                features[f'epl_zone_{zone_num}_occupied'] = 1 if count > 0 else 0
+                features[f'epl_zone_{zone_num}_targets'] = count
+                total_targets += count
+            features['epl_total_targets'] = total_targets
+            features['epl_zones_active'] = sum(
+                1 for c in epl_zones.values() if c > 0
+            )
+        if epl_assumed_present:
+            features['epl_assumed_present'] = epl_assumed_present
+
+        # Phase 2: TV power (strong presence indicator)
+        if tv_power_watts is not None:
+            features['tv_power_watts'] = tv_power_watts
+            features['tv_active'] = 1 if tv_power_watts > 15.0 else 0
+
+        # Phase 2: CO2 (elevated = presence)
+        if co2_ppm is not None:
+            features['co2_ppm'] = co2_ppm
+            features['co2_elevated'] = 1 if co2_ppm > 600 else 0
 
         return features
