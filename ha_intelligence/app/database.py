@@ -284,13 +284,16 @@ class Database:
                                   question_text: str, options: list,
                                   prediction_id: int = None,
                                   confidence: float = None) -> int:
-        return self.execute(
+        conn = self._connect()
+        cur = conn.execute(
             """INSERT INTO feedback_questions
                (question_type, target, question_text, options,
                 prediction_id, confidence)
                VALUES (?, ?, ?, ?, ?, ?)""",
             (question_type, target, question_text,
              json.dumps(options), prediction_id, confidence))
+        conn.commit()
+        return cur.lastrowid
 
     def answer_feedback_question(self, question_id: int, answer: str):
         self.execute(
@@ -719,7 +722,7 @@ CREATE TABLE IF NOT EXISTS system_config (
 
 -- Default config
 INSERT OR IGNORE INTO system_config (key, value) VALUES
-    ('version', '0.3.2'),
+    ('version', '0.8.1'),
     ('started_at', datetime('now')),
     ('confidence_threshold', '0.4');
 

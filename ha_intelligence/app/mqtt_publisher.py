@@ -65,7 +65,7 @@ class MQTTPublisher:
                 "name": "HA Intelligence",
                 "manufacturer": "Hyggebo",
                 "model": "Intelligence System",
-                "sw_version": "0.8.0",
+                "sw_version": "0.8.1",
             },
         }
         if icon:
@@ -171,7 +171,7 @@ class MQTTPublisher:
     def subscribe_feedback(self, callback):
         """Subscribe to hai/feedback/# for user answers."""
         self.client.subscribe("hai/feedback/#")
-        self.client.on_message = callback
+        self.client.message_callback_add("hai/feedback/#", callback)
         logger.info("Subscribed to hai/feedback/#")
 
     def stop(self):

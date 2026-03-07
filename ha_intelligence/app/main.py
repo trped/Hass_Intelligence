@@ -733,6 +733,18 @@ class SensorEngine:
                 }
             )
 
+            # Activity inference for home persons with known room
+            if is_home and room_id and self.activity_engine:
+                try:
+                    self.activity_engine.infer_activity(
+                        person_slug=person['slug'],
+                        person_name=person['name'],
+                        room_slug=room_id,
+                        room_name=room_name,
+                    )
+                except Exception as e:
+                    logger.debug(f"Activity inference error for {person['slug']}: {e}")
+
     async def _publish_system(self):
         """Publish system status sensor."""
         stats = self.db.get_stats()
@@ -799,7 +811,7 @@ class SensorEngine:
         self.mqtt.publish_system_status(
             status=status,
             attributes={
-                'version': '0.8.0',
+                'version': '0.8.1',
                 'events_24h': stats['events_24h'],
                 'events_total': stats['events_total'],
                 'entities_discovered': stats['entities_discovered'],
@@ -868,7 +880,7 @@ async def periodic_feedback_status(feedback_engine):
 
 async def main():
     logger.info("=" * 50)
-    logger.info("HA Intelligence v0.5.3 starting...")
+    logger.info("HA Intelligence v0.8.1 starting...")
     logger.info("=" * 50)
 
     # Load config
