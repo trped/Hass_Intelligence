@@ -7,6 +7,8 @@ from pathlib import Path
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
+from entity_categories import CATEGORIES, CATEGORY_MAP, matches_category, get_category_keys
+
 logger = logging.getLogger(__name__)
 
 # Ingress path from HA
@@ -388,6 +390,151 @@ def create_app(db, event_listener, mqtt_pub, registry=None, ml_engine=None,
             'feedback_quiet_start': settings_manager.get_option('feedback_quiet_start'),
             'feedback_quiet_end': settings_manager.get_option('feedback_quiet_end'),
             'log_level': settings_manager.get_option('log_level'),
+        }
+
+    # ── Entity Picker API ──────────────────────────────────────
+
+    @app.get("/api/entity-picker/categories")
+    async def entity_picker_categories():
+        """Return all 11 categories with metadata and selection counts."""
+        selections = settings_manager.get_entity_selections() if settings_manager else {}
+        result = []
+        for cat in CATEGORIES:
+            selected = selections.get(cat['key'], [])
+            result.append({
+                'key': cat['key'],
+                'label': cat['label'],
+                'icon': cat['icon'],
+                'selected_count': len(selected),
+            })
+        return {'categories': result}
+
+    @app.get("/api/entity-picker/{category}/entities")
+    async def entity_picker_entities(category: str):
+        """Return matching entities for a category with current state."""
+        if category not in CATEGORY_MAP:
+            return JSONResponse({'error': f'Unknown category: {category}'}, 404)
+
+        cat_def = CATEGORY_MAP[category]
+        selected = settings_manager.get_entity_selections(category) if settings_manager else []
+        dismissed = settings_manager.get_dismissed_suggestions() if settings_manager else []
+
+        # Get all entities from registry
+        entities_by_area = {}  # area_name -> [entity_info]
+        if registry:
+            for eid, info in registry._entities.items():
+                device_class = info.get('device_class') or info.get('original_device_class', '')
+                if not matches_category(eid, device_class, cat_def):
+                    continue
+
+                area_id = registry.get_area_id(eid) or 'unassigned'
+                area_name = registry.get_area_name(area_id) or 'Ingen rum'
+
+                entity_info = {
+                    'entity_id': eid,
+                    'friendly_name': info.get('name') or info.get('original_name') or eid,
+                    'device_class': device_class or None,
+                    'area_id': area_id,
+                    'area_name': area_name,
+                    'selected': eid in selected,
+                    'suggested': eid not in selected and eid not in dismissed,
+                    'state': None,
+                    'state_color': 'gray',
+                }
+                entities_by_area.setdefault(area_name, []).append(entity_info)
+
+        # Sort areas and entities
+        sorted_areas = []
+        for area_name in sorted(entities_by_area.keys()):
+            ents = sorted(entities_by_area[area_name], key=lambda e: e['friendly_name'])
+            sorted_areas.append({
+                'area_name': area_name,
+                'entities': ents,
+                'count': len(ents),
+            })
+
+        return {
+            'category': category,
+            'label': cat_def['label'],
+            'areas': sorted_areas,
+            'total': sum(a['count'] for a in sorted_areas),
+            'selected_count': len(selected),
+        }
+
+    @app.post("/api/entity-picker/{category}/select")
+    async def entity_picker_select(category: str, request: Request):
+        """Save selected entity_ids for a category."""
+        if category not in CATEGORY_MAP:
+            return JSONResponse({'error': f'Unknown category: {category}'}, 404)
+        body = await request.json()
+        entity_ids = body.get('entity_ids', [])
+        if not isinstance(entity_ids, list):
+            return JSONResponse({'error': 'entity_ids must be a list'}, 400)
+        if settings_manager:
+            settings_manager.set_entity_selections(category, entity_ids)
+        return {'status': 'ok', 'category': category, 'count': len(entity_ids)}
+
+    @app.get("/api/entity-picker/suggestions")
+    async def entity_picker_suggestions():
+        """Return auto-suggest results across all categories."""
+        if not registry or not settings_manager:
+            return {'suggestions': {}, 'total': 0}
+
+        selections = settings_manager.get_entity_selections()
+        dismissed = settings_manager.get_dismissed_suggestions()
+        suggestions = {}
+
+        for cat in CATEGORIES:
+            cat_selected = selections.get(cat['key'], [])
+            cat_suggestions = []
+            for eid, info in registry._entities.items():
+                dc = info.get('device_class') or info.get('original_device_class', '')
+                if not matches_category(eid, dc, cat):
+                    continue
+                if eid in cat_selected or eid in dismissed:
+                    continue
+                cat_suggestions.append({
+                    'entity_id': eid,
+                    'friendly_name': info.get('name') or info.get('original_name') or eid,
+                    'device_class': dc or None,
+                    'area_id': registry.get_area_id(eid) or 'unassigned',
+                })
+            if cat_suggestions:
+                suggestions[cat['key']] = cat_suggestions
+
+        total = sum(len(v) for v in suggestions.values())
+        return {'suggestions': suggestions, 'total': total}
+
+    @app.post("/api/entity-picker/suggestions/dismiss")
+    async def entity_picker_dismiss(request: Request):
+        """Dismiss a suggestion so it won't appear again."""
+        body = await request.json()
+        entity_id = body.get('entity_id', '')
+        if not entity_id:
+            return JSONResponse({'error': 'entity_id required'}, 400)
+        if settings_manager:
+            settings_manager.dismiss_suggestion(entity_id)
+        return {'status': 'ok', 'dismissed': entity_id}
+
+    @app.get("/api/entity-picker/stats")
+    async def entity_picker_stats():
+        """Return stability stats for entities (unavailable %)."""
+        if not settings_manager:
+            return {'stats': {}}
+
+        selections = settings_manager.get_entity_selections()
+        all_selected = []
+        for ents in selections.values():
+            all_selected.extend(ents)
+
+        stats = {}
+        for eid in all_selected:
+            # TODO: Calculate unavailable % from DB history
+            stats[eid] = {'unavailable_pct': 0, 'unstable': False}
+
+        return {
+            'stats': stats,
+            'total_selected': len(all_selected),
         }
 
     return app
