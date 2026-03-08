@@ -111,6 +111,7 @@ class SensorEngine:
         self._publish_interval = 60  # seconds
         self._stale_threshold = timedelta(minutes=30)
         self._last_predictions = {}  # sensor_target -> prediction_id (for feedback loop)
+        self._insights_cache = {'persons': {}, 'rooms': {}}  # Cache for web UI insights tab
 
     async def on_state_change(self, entity_id: str, old_state: str,
                                new_state: str, attributes: dict):
@@ -631,36 +632,41 @@ class SensorEngine:
                 self.feedback_engine.ask_room_state(
                     room['slug'], room['name'], confidence, pred_id)
 
+            room_attrs = {
+                'area_id': area_id,
+                'motion_sensors': len(sensors),
+                'active_sensors': sum(1 for v in sensors.values() if v == 'on'),
+                'last_occupied': room_info.get('last_occupied'),
+                'confidence': confidence,
+                'source': source,
+                'rule_state': rule_state,
+                'rule_confidence': rule_confidence,
+                'ml_state': ml_state,
+                'ml_confidence': ml_confidence,
+                'ml_samples': ml_samples,
+                # Phase 2: Evidence sources
+                'evidence_sources': evidence['sources'],
+                'evidence_count': evidence['count'],
+                'evidence_detail': evidence['detail'],
+                # Phase 3: State priors
+                'prior_state': prior_info.get('best_state'),
+                'prior_probability': prior_info.get('best_probability', 0.0),
+                'prior_available': prior_info.get('has_data', False),
+                # Phase 4: Anomaly detection
+                'anomaly_score': anomaly_info.get('score'),
+                'anomaly_ready': anomaly_info.get('ready', False),
+                'anomalies_detected': anomaly_info.get('anomalies_detected', 0),
+            }
             self.mqtt.publish_room(
                 slug=room['slug'],
                 name=room['name'],
                 state=state,
-                attributes={
-                    'area_id': area_id,
-                    'motion_sensors': len(sensors),
-                    'active_sensors': sum(1 for v in sensors.values() if v == 'on'),
-                    'last_occupied': room_info.get('last_occupied'),
-                    'confidence': confidence,
-                    'source': source,
-                    'rule_state': rule_state,
-                    'rule_confidence': rule_confidence,
-                    'ml_state': ml_state,
-                    'ml_confidence': ml_confidence,
-                    'ml_samples': ml_samples,
-                    # Phase 2: Evidence sources
-                    'evidence_sources': evidence['sources'],
-                    'evidence_count': evidence['count'],
-                    'evidence_detail': evidence['detail'],
-                    # Phase 3: State priors
-                    'prior_state': prior_info.get('best_state'),
-                    'prior_probability': prior_info.get('best_probability', 0.0),
-                    'prior_available': prior_info.get('has_data', False),
-                    # Phase 4: Anomaly detection
-                    'anomaly_score': anomaly_info.get('score'),
-                    'anomaly_ready': anomaly_info.get('ready', False),
-                    'anomalies_detected': anomaly_info.get('anomalies_detected', 0),
-                }
+                attributes=room_attrs,
             )
+            # Cache for insights API
+            self._insights_cache['rooms'][room['slug']] = {
+                'name': room['name'], 'state': state, **room_attrs,
+            }
 
     async def _publish_persons(self):
         """Publish person sensors with ML prediction + rule-based fallback."""
@@ -814,39 +820,44 @@ class SensorEngine:
                 except Exception as e:
                     logger.debug(f"Activity inference error for {person['slug']}: {e}")
 
+            person_attrs = {
+                'home': is_home,
+                'ha_state': ha_state,
+                'location': 'home' if is_home else 'away',
+                'room': room_name if is_home else 'away',
+                'room_id': room_id,
+                'room_confidence': round(room_confidence, 2),
+                'room_source': room_source,
+                'ble_distance': round(ble_distance, 2) if ble_distance is not None else None,
+                'minutes_in_room': minutes_in_room,
+                'activity': state,
+                'confidence': confidence,
+                'source': source,
+                'rule_state': rule_state,
+                'rule_confidence': rule_confidence,
+                'ml_state': ml_state,
+                'ml_confidence': ml_confidence,
+                'ml_samples': ml_samples,
+                # Phase 3: State priors
+                'prior_state': person_prior_info.get('best_state'),
+                'prior_probability': person_prior_info.get('best_probability', 0.0),
+                'prior_available': person_prior_info.get('has_data', False),
+                # Phase 4: Markov movement prediction
+                'predicted_next_room': predicted_next_room,
+                'next_room_probability': next_room_probability,
+                # Activity inference (merged into person sensor)
+                **activity_attrs,
+            }
             self.mqtt.publish_person(
                 slug=person['slug'],
                 name=person['name'],
                 state=state,
-                attributes={
-                    'home': is_home,
-                    'ha_state': ha_state,
-                    'location': 'home' if is_home else 'away',
-                    'room': room_name if is_home else 'away',
-                    'room_id': room_id,
-                    'room_confidence': round(room_confidence, 2),
-                    'room_source': room_source,
-                    'ble_distance': round(ble_distance, 2) if ble_distance is not None else None,
-                    'minutes_in_room': minutes_in_room,
-                    'activity': state,
-                    'confidence': confidence,
-                    'source': source,
-                    'rule_state': rule_state,
-                    'rule_confidence': rule_confidence,
-                    'ml_state': ml_state,
-                    'ml_confidence': ml_confidence,
-                    'ml_samples': ml_samples,
-                    # Phase 3: State priors
-                    'prior_state': person_prior_info.get('best_state'),
-                    'prior_probability': person_prior_info.get('best_probability', 0.0),
-                    'prior_available': person_prior_info.get('has_data', False),
-                    # Phase 4: Markov movement prediction
-                    'predicted_next_room': predicted_next_room,
-                    'next_room_probability': next_room_probability,
-                    # Activity inference (merged into person sensor)
-                    **activity_attrs,
-                }
+                attributes=person_attrs,
             )
+            # Cache for insights API
+            self._insights_cache['persons'][person['slug']] = {
+                'name': person['name'], 'state': state, **person_attrs,
+            }
 
     async def _publish_system(self):
         """Publish system status sensor."""
@@ -914,7 +925,7 @@ class SensorEngine:
         self.mqtt.publish_system_status(
             status=status,
             attributes={
-                'version': '0.8.7',
+                'version': '0.8.8',
                 'events_24h': stats['events_24h'],
                 'events_total': stats['events_total'],
                 'entities_discovered': stats['entities_discovered'],
@@ -983,7 +994,7 @@ async def periodic_feedback_status(feedback_engine):
 
 async def main():
     logger.info("=" * 50)
-    logger.info("HA Intelligence v0.8.5 starting...")
+    logger.info("HA Intelligence v0.8.8 starting...")
     logger.info("=" * 50)
 
     # Load config
@@ -1088,7 +1099,8 @@ async def main():
     app = create_app(db, event_listener, mqtt, registry=registry, ml_engine=ml_engine,
                      notification_engine=notification_engine,
                      feedback_engine=feedback_engine,
-                     activity_engine=activity_inference)
+                     activity_engine=activity_inference,
+                     sensor_engine=sensor_engine)
 
     # Start all tasks
     loop = asyncio.get_event_loop()

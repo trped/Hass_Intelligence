@@ -15,7 +15,7 @@ INGRESS_PATH = os.environ.get('INGRESS_PATH', '')
 
 def create_app(db, event_listener, mqtt_pub, registry=None, ml_engine=None,
                notification_engine=None, feedback_engine=None,
-               activity_engine=None) -> FastAPI:
+               activity_engine=None, sensor_engine=None) -> FastAPI:
     """Create FastAPI app with ingress support."""
 
     # Strip trailing slashes from ingress path to avoid double-slash issues
@@ -315,6 +315,12 @@ def create_app(db, event_listener, mqtt_pub, registry=None, ml_engine=None,
     async def get_learned_activities():
         return db.get_learned_activities()
 
+    @app.get("/api/insights")
+    async def get_insights():
+        if sensor_engine:
+            return sensor_engine._insights_cache
+        return {'persons': {}, 'rooms': {}}
+
     return app
 
 
@@ -398,16 +404,56 @@ def get_dashboard_html() -> str:
   .feedback-q { background:rgba(59,130,246,0.1); border-radius:8px; padding:12px; margin:8px 0; }
   .feedback-q button { margin:4px 4px 0 0; padding:4px 12px; border:1px solid var(--primary); background:transparent; color:var(--primary); border-radius:6px; cursor:pointer; }
   .feedback-q button:hover { background:var(--primary); color:white; }
+  /* Tab navigation */
+  .tab-bar { display:flex; gap:4px; margin-bottom:24px; }
+  .tab-btn { padding:8px 20px; border-radius:8px; border:none; background:transparent; color:var(--text-dim); cursor:pointer; font-size:14px; font-weight:500; transition:.2s; }
+  .tab-btn:hover { background:rgba(255,255,255,0.05); }
+  .tab-btn.active { background:var(--primary); color:white; }
+  .tab-content { display:none; }
+  .tab-content.active { display:block; }
+  /* Insight cards */
+  .insight-grid { display:grid; grid-template-columns:repeat(auto-fit, minmax(420px, 1fr)); gap:16px; margin-bottom:24px; }
+  .insight-card { background:var(--card); border-radius:12px; padding:20px; border:1px solid rgba(255,255,255,0.05); }
+  .insight-header { display:flex; justify-content:space-between; align-items:center; margin-bottom:16px; padding-bottom:12px; border-bottom:1px solid rgba(255,255,255,0.08); }
+  .insight-header h3 { font-size:16px; display:flex; align-items:center; gap:8px; }
+  .insight-section { margin-bottom:14px; }
+  .insight-section h4 { font-size:11px; color:var(--text-dim); text-transform:uppercase; letter-spacing:0.5px; margin-bottom:6px; }
+  .insight-row { display:flex; gap:12px; flex-wrap:wrap; font-size:13px; margin:3px 0; }
+  .insight-row .key { color:var(--text-dim); min-width:90px; }
+  .insight-row .val { font-weight:500; }
+  .evidence-item { padding:4px 8px; background:rgba(255,255,255,0.03); border-radius:4px; margin:2px 0; font-size:12px; display:flex; align-items:center; gap:6px; }
+  .evidence-dot { width:6px; height:6px; border-radius:50%; background:var(--green); flex-shrink:0; }
+  .confidence-bar { height:4px; border-radius:2px; background:rgba(255,255,255,0.1); margin-top:4px; width:100%; }
+  .confidence-fill { height:100%; border-radius:2px; transition:width .3s; }
+  .decision-grid { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
+  .decision-box { background:rgba(255,255,255,0.03); border-radius:6px; padding:8px 10px; font-size:12px; }
+  .decision-box .label { color:var(--text-dim); margin-bottom:2px; }
+  .decision-box .value { font-weight:600; }
+  .state-badge { padding:2px 10px; border-radius:6px; font-size:12px; font-weight:600; }
+  .state-badge.active { background:rgba(34,197,94,0.15); color:var(--green); }
+  .state-badge.idle { background:rgba(245,158,11,0.15); color:var(--orange); }
+  .state-badge.sleeping { background:rgba(168,85,247,0.15); color:var(--purple); }
+  .state-badge.away { background:rgba(148,163,184,0.15); color:var(--text-dim); }
+  .state-badge.occupied { background:rgba(34,197,94,0.15); color:var(--green); }
+  .state-badge.empty { background:rgba(239,68,68,0.15); color:var(--red); }
+  .insight-empty { color:var(--text-dim); font-size:14px; text-align:center; padding:40px 0; }
 </style>
 </head>
 <body>
 
 <h1>
   <span class="icon">&#129504;</span> HA Intelligence
-  <span class="version">v0.8.1</span>
+  <span class="version">v0.8.8</span>
   <span style="flex:1"></span>
   <button class="refresh-btn" onclick="loadAll()">Opdater</button>
 </h1>
+
+<div class="tab-bar">
+  <button class="tab-btn active" data-tab="system" onclick="switchTab('system')">System</button>
+  <button class="tab-btn" data-tab="insights" onclick="switchTab('insights')">Indsigt</button>
+</div>
+
+<div id="tab-system" class="tab-content active">
 
 <div class="grid">
   <div class="card">
@@ -466,6 +512,14 @@ def get_dashboard_html() -> str:
     <tbody id="events-body"><tr><td colspan="5">Indlaeser...</td></tr></tbody>
   </table>
 </div>
+
+</div><!-- /tab-system -->
+
+<div id="tab-insights" class="tab-content">
+  <div class="insight-grid" id="person-insights"></div>
+  <div class="insight-grid" id="room-insights"></div>
+  <div id="insights-empty" class="insight-empty" style="display:none">Venter paa data... Indsigt vises naar foerste publish-cyklus er koert.</div>
+</div><!-- /tab-insights -->
 
 <script>
 const BASE = window.location.pathname.replace(/\/+$/, '');
@@ -740,8 +794,151 @@ async function loadActivities() {
     } catch(e) { console.error('loadActivities error', e); }
 }
 
+// ── Tab switching ──────────────────────────────────
+function switchTab(tabId) {
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+  document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+  document.querySelector(`[data-tab="${tabId}"]`).classList.add('active');
+  document.getElementById(`tab-${tabId}`).classList.add('active');
+  localStorage.setItem('hai_tab', tabId);
+}
+
+// Restore saved tab
+const savedTab = localStorage.getItem('hai_tab');
+if (savedTab) switchTab(savedTab);
+
+// ── Insight rendering ──────────────────────────────
+function confColor(c) {
+  if (c >= 0.8) return 'var(--green)';
+  if (c >= 0.5) return 'var(--orange)';
+  return 'var(--red)';
+}
+function pct(v) { return Math.round((v || 0) * 100) + '%'; }
+
+function renderPersonInsights(persons) {
+  const el = document.getElementById('person-insights');
+  const keys = Object.keys(persons);
+  if (!keys.length) { el.innerHTML = ''; return; }
+  el.innerHTML = keys.map(slug => {
+    const p = persons[slug];
+    const stateClass = p.state || 'away';
+    const room = p.room || 'ukendt';
+    const roomSrc = p.room_source || '-';
+    const roomConf = p.room_confidence || 0;
+    const ble = p.ble_distance != null ? p.ble_distance + 'm' : '-';
+    const mins = p.minutes_in_room || 0;
+    const act = p.inferred_activity || '-';
+    const actConf = p.activity_confidence || 0;
+    const actSrc = p.activity_source || '-';
+    const actZone = p.activity_zone || '-';
+    const actCands = (p.activity_candidates || []).join(', ') || '-';
+    const actDevs = p.activity_devices ? Object.entries(p.activity_devices).map(([k,v]) => k+': '+v).join(', ') : '-';
+    const ruleS = p.rule_state || '-';
+    const ruleC = p.rule_confidence || 0;
+    const mlS = p.ml_state || '-';
+    const mlC = p.ml_confidence || 0;
+    const priorS = p.prior_state || '-';
+    const priorP = p.prior_probability || 0;
+    const nextRoom = p.predicted_next_room || '-';
+    const nextP = p.next_room_probability || 0;
+    return `<div class="insight-card">
+      <div class="insight-header">
+        <h3>&#128100; ${p.name}</h3>
+        <span class="state-badge ${stateClass}">${p.state}</span>
+      </div>
+      <div class="insight-section">
+        <h4>Placering</h4>
+        <div class="insight-row"><span class="key">Rum:</span><span class="val">${room}</span></div>
+        <div class="insight-row"><span class="key">Kilde:</span><span class="val">${roomSrc}</span><span class="key" style="margin-left:8px">Confidence:</span><span class="val">${pct(roomConf)}</span></div>
+        <div class="confidence-bar"><div class="confidence-fill" style="width:${roomConf*100}%;background:${confColor(roomConf)}"></div></div>
+        <div class="insight-row"><span class="key">BLE afstand:</span><span class="val">${ble}</span><span class="key" style="margin-left:8px">I rummet:</span><span class="val">${mins} min</span></div>
+      </div>
+      ${act !== '-' ? `<div class="insight-section">
+        <h4>Aktivitet</h4>
+        <div class="insight-row"><span class="key">Aktivitet:</span><span class="val">${act}</span></div>
+        <div class="insight-row"><span class="key">Kilde:</span><span class="val">${actSrc}</span><span class="key" style="margin-left:8px">Confidence:</span><span class="val">${pct(actConf)}</span></div>
+        <div class="confidence-bar"><div class="confidence-fill" style="width:${actConf*100}%;background:${confColor(actConf)}"></div></div>
+        <div class="insight-row"><span class="key">Zone:</span><span class="val">${actZone}</span></div>
+        <div class="insight-row"><span class="key">Enheder:</span><span class="val">${actDevs}</span></div>
+        <div class="insight-row"><span class="key">Kandidater:</span><span class="val">${actCands}</span></div>
+      </div>` : ''}
+      <div class="insight-section">
+        <h4>ML Beslutning</h4>
+        <div class="decision-grid">
+          <div class="decision-box"><div class="label">Regel</div><div class="value">${ruleS} (${pct(ruleC)})</div></div>
+          <div class="decision-box"><div class="label">ML</div><div class="value">${mlS} (${pct(mlC)})</div></div>
+          <div class="decision-box"><div class="label">Prior</div><div class="value">${priorS} (${pct(priorP)})</div></div>
+          <div class="decision-box"><div class="label">Naeste rum</div><div class="value">${nextRoom} (${pct(nextP)})</div></div>
+        </div>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function renderRoomInsights(rooms) {
+  const el = document.getElementById('room-insights');
+  const keys = Object.keys(rooms);
+  if (!keys.length) { el.innerHTML = ''; return; }
+  el.innerHTML = keys.map(slug => {
+    const r = rooms[slug];
+    const stateClass = r.state === 'occupied' ? 'occupied' : (r.state === 'empty' ? 'empty' : 'active');
+    const motionTotal = r.motion_sensors || 0;
+    const motionActive = r.active_sensors || 0;
+    const lastOcc = r.last_occupied || '-';
+    const conf = r.confidence || 0;
+    const src = r.source || '-';
+    const evidSrcs = r.evidence_sources || [];
+    const evidCount = r.evidence_count || 0;
+    const evidDetail = r.evidence_detail || [];
+    const ruleS = r.rule_state || '-';
+    const ruleC = r.rule_confidence || 0;
+    const mlS = r.ml_state || '-';
+    const mlC = r.ml_confidence || 0;
+    const priorS = r.prior_state || '-';
+    const priorP = r.prior_probability || 0;
+    const anomScore = r.anomaly_score != null ? r.anomaly_score.toFixed(2) : '-';
+    const anomReady = r.anomaly_ready || false;
+    return `<div class="insight-card">
+      <div class="insight-header">
+        <h3>&#127968; ${r.name}</h3>
+        <span class="state-badge ${stateClass}">${r.state}</span>
+      </div>
+      <div class="insight-section">
+        <h4>Sensorer</h4>
+        <div class="insight-row"><span class="key">Motion:</span><span class="val">${motionActive} aktive / ${motionTotal} total</span></div>
+        <div class="insight-row"><span class="key">Sidst optaget:</span><span class="val">${lastOcc}</span></div>
+        <div class="insight-row"><span class="key">Confidence:</span><span class="val">${pct(conf)}</span><span class="key" style="margin-left:8px">Kilde:</span><span class="val">${src}</span></div>
+        <div class="confidence-bar"><div class="confidence-fill" style="width:${conf*100}%;background:${confColor(conf)}"></div></div>
+      </div>
+      ${evidCount > 0 ? `<div class="insight-section">
+        <h4>Evidence (${evidCount} kilder)</h4>
+        ${evidDetail.map(e => `<div class="evidence-item"><span class="evidence-dot"></span>${e}</div>`).join('')}
+      </div>` : ''}
+      <div class="insight-section">
+        <h4>ML Beslutning</h4>
+        <div class="decision-grid">
+          <div class="decision-box"><div class="label">Regel</div><div class="value">${ruleS} (${pct(ruleC)})</div></div>
+          <div class="decision-box"><div class="label">ML</div><div class="value">${mlS} (${pct(mlC)})</div></div>
+          <div class="decision-box"><div class="label">Prior</div><div class="value">${priorS} (${pct(priorP)})</div></div>
+          <div class="decision-box"><div class="label">Anomaly</div><div class="value">${anomScore} ${anomReady ? '&#9989;' : '&#9203;'}</div></div>
+        </div>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+async function loadInsights() {
+  try {
+    const data = await fetchJson('/api/insights');
+    const hasData = Object.keys(data.persons || {}).length > 0 || Object.keys(data.rooms || {}).length > 0;
+    document.getElementById('insights-empty').style.display = hasData ? 'none' : 'block';
+    renderPersonInsights(data.persons || {});
+    renderRoomInsights(data.rooms || {});
+  } catch(e) { console.error('loadInsights error', e); }
+}
+
 function loadAll() {
-  loadStats(); loadRooms(); loadPersons(); loadEvents(); loadML(); loadPriors(); loadNotifications(); loadFeedback(); loadActivities();
+  loadStats(); loadRooms(); loadPersons(); loadEvents(); loadML(); loadPriors(); loadNotifications(); loadFeedback(); loadActivities(); loadInsights();
 }
 
 loadAll();
