@@ -1,5 +1,5 @@
 name: "HA Intelligence"
-version: "0.9.0"
+version: "1.0.0"
 slug: ha_intelligence
 description: "Self-learning household intelligence system"
 url: "https://github.com/trped/Hass_Intelligence"
