@@ -215,6 +215,61 @@ class SettingsManager:
         self._save()
         logger.info(f"Entity selections '{category}' updated: {len(entity_ids)} entities")
 
+    # ── Migration ─────────────────────────────────────────────────
+
+    def migrate_from_options(self, options: dict):
+        """One-time migration of hardcoded config.yaml values to settings.json.
+
+        Migrates: bermuda_sensors, activity_device_sensors
+        Only runs if entity_selections is empty (first run after Phase 1 update).
+        """
+        selections = self._settings.get('entity_selections', {})
+
+        # Skip if already migrated (any category has entries)
+        if any(selections.get(k) for k in selections):
+            logger.debug("Settings already migrated, skipping")
+            return
+
+        logger.info("Migrating config.yaml options to settings.json...")
+
+        # Migrate bermuda_sensors → ble_tracking
+        bermuda_raw = options.get('bermuda_sensors', '')
+        if bermuda_raw:
+            try:
+                bermuda_map = json.loads(bermuda_raw) if isinstance(bermuda_raw, str) else bermuda_raw
+                # bermuda_map: {"person.troels": "sensor.bermuda_xxx"}
+                ble_entities = list(bermuda_map.values())
+                self.set_entity_selections('ble_tracking', ble_entities)
+                logger.info(f"Migrated {len(ble_entities)} BLE tracking sensors")
+            except (json.JSONDecodeError, TypeError) as e:
+                logger.error(f"Failed to migrate bermuda_sensors: {e}")
+
+        # Migrate activity_device_sensors → appliances + media
+        device_raw = options.get('activity_device_sensors', '')
+        if device_raw:
+            try:
+                device_map = json.loads(device_raw) if isinstance(device_raw, str) else device_raw
+                appliance_entities = []
+                media_entities = []
+                for room, devices in device_map.items():
+                    for device_type, entity_id in devices.items():
+                        if entity_id.startswith('media_player.'):
+                            media_entities.append(entity_id)
+                        else:
+                            appliance_entities.append(entity_id)
+                if appliance_entities:
+                    self.set_entity_selections('appliances', appliance_entities)
+                if media_entities:
+                    self.set_entity_selections('media', media_entities)
+                logger.info(
+                    f"Migrated {len(appliance_entities)} appliance + "
+                    f"{len(media_entities)} media entities"
+                )
+            except (json.JSONDecodeError, TypeError) as e:
+                logger.error(f"Failed to migrate activity_device_sensors: {e}")
+
+        logger.info("Config migration complete")
+
     def get_dismissed_suggestions(self) -> list:
         """Get list of dismissed entity suggestion IDs."""
         return self._settings.get('entity_suggestions_dismissed', [])

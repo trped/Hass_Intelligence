@@ -1086,6 +1086,7 @@ async def main():
 
     # Initialize settings manager (writable app settings)
     settings = SettingsManager(options)
+    settings.migrate_from_options(options)  # One-time migration
     logger.info("Settings manager initialized")
 
     # Resolve SUPERVISOR_TOKEN (may be in S6 env file, not Docker env)
@@ -1160,7 +1161,8 @@ async def main():
         settings_manager=settings,
     )
 
-    # Initialize BLE person-room tracking from config
+    # Initialize BLE person-room tracking from settings (migrated from config.yaml)
+    ble_tracking = settings.get_entity_selections('ble_tracking')
     bermuda_raw = options.get('bermuda_sensors', '')
     if bermuda_raw:
         try:
