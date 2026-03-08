@@ -15,8 +15,8 @@ from river import anomaly
 logger = logging.getLogger(__name__)
 
 MODELS_DIR = '/data/models'
-MIN_SAMPLES = 100  # Train on at least 100 normal samples before scoring
-ANOMALY_THRESHOLD = 0.7  # Score > 0.7 = anomaly
+MIN_SAMPLES = 500  # Train on at least 500 normal samples before scoring
+ANOMALY_THRESHOLD = 0.92  # Score > 0.92 = anomaly (tuned to reduce false positives)
 WINDOW_SIZE = 250  # HalfSpaceTrees window size
 
 
