@@ -59,6 +59,20 @@ DEFAULTS = {
     'system': {
         'publish_interval': 60,
     },
+    'entity_selections': {
+        'persons': [],
+        'presence': [],
+        'ble_tracking': [],
+        'lights': [],
+        'climate': [],
+        'media': [],
+        'energy': [],
+        'appliances': [],
+        'security': [],
+        'calendars': [],
+        'cameras': [],
+    },
+    'entity_suggestions_dismissed': [],
 }
 
 
@@ -185,3 +199,30 @@ class SettingsManager:
     def get_room_config(self, area_id: str) -> dict:
         """Get config overrides for a specific room."""
         return self._settings.get('rooms', {}).get(area_id, {})
+
+    def get_entity_selections(self, category: str = None) -> dict | list:
+        """Get entity selections — all categories or a specific one."""
+        selections = self._settings.get('entity_selections', {})
+        if category:
+            return selections.get(category, [])
+        return selections
+
+    def set_entity_selections(self, category: str, entity_ids: list):
+        """Set selected entity_ids for a category and persist."""
+        if 'entity_selections' not in self._settings:
+            self._settings['entity_selections'] = {}
+        self._settings['entity_selections'][category] = entity_ids
+        self._save()
+        logger.info(f"Entity selections '{category}' updated: {len(entity_ids)} entities")
+
+    def get_dismissed_suggestions(self) -> list:
+        """Get list of dismissed entity suggestion IDs."""
+        return self._settings.get('entity_suggestions_dismissed', [])
+
+    def dismiss_suggestion(self, entity_id: str):
+        """Add entity_id to dismissed suggestions list."""
+        dismissed = self._settings.get('entity_suggestions_dismissed', [])
+        if entity_id not in dismissed:
+            dismissed.append(entity_id)
+            self._settings['entity_suggestions_dismissed'] = dismissed
+            self._save()
