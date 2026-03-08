@@ -4,14 +4,15 @@ Publishes actionable notifications to HA via MQTT → persistent_notification.
 Supports anomaly alerts, prediction-based notifications, and low confidence warnings.
 """
 
+import json
 import logging
+import os
 import time
+import urllib.request
+import urllib.error
 from datetime import datetime, timezone, timedelta
 
 logger = logging.getLogger(__name__)
-
-# MQTT topic for HA persistent_notification via MQTT
-NOTIFY_TOPIC = "hai/notify"
 
 
 class NotificationEngine:
@@ -24,6 +25,12 @@ class NotificationEngine:
         self.cooldown_min = options.get('feedback_cooldown_min', 120)
         self.quiet_start = self._parse_time(options.get('feedback_quiet_start', '22:00'))
         self.quiet_end = self._parse_time(options.get('feedback_quiet_end', '07:00'))
+        self.notify_service = options.get('feedback_notify_service', '')
+
+        # HA Supervisor API
+        self._ha_url = os.environ.get(
+            'SUPERVISOR_URL', 'http://supervisor/core')
+        self._ha_token = os.environ.get('SUPERVISOR_TOKEN', '')
 
         # State
         self._sent_today = 0
@@ -78,25 +85,42 @@ class NotificationEngine:
 
         return True
 
-    def _send(self, title: str, message: str, notification_type: str = 'info'):
-        """Publish notification via MQTT Discovery."""
-        if not self.mqtt or not self.mqtt.connected:
-            logger.warning(f"MQTT not connected, skipping notification: {title}")
+    def _call_ha_service(self, domain: str, service: str,
+                          data: dict) -> bool:
+        """Call a Home Assistant service via Supervisor API."""
+        url = f"{self._ha_url}/api/services/{domain}/{service}"
+        body = json.dumps(data).encode('utf-8')
+        req = urllib.request.Request(
+            url, data=body, method='POST',
+            headers={
+                'Authorization': f'Bearer {self._ha_token}',
+                'Content-Type': 'application/json',
+            })
+        try:
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                return resp.status < 400
+        except (urllib.error.URLError, urllib.error.HTTPError) as e:
+            logger.error(f"HA service call failed {domain}.{service}: {e}")
             return False
 
-        import json
-
-        payload = json.dumps({
+    def _send(self, title: str, message: str, notification_type: str = 'info'):
+        """Send notification via HA persistent_notification + optional mobile."""
+        # Persistent notification (always visible in HA dashboard)
+        self._call_ha_service('persistent_notification', 'create', {
             'title': f"HAI: {title}",
             'message': message,
             'notification_id': f"hai_{notification_type}_{int(time.time())}",
         })
 
-        self.mqtt.client.publish(
-            NOTIFY_TOPIC,
-            payload,
-            retain=False,
-        )
+        # Mobile notification if service configured
+        if self.notify_service:
+            parts = self.notify_service.split('.', 1)
+            domain = parts[0] if len(parts) == 2 else 'notify'
+            service = parts[1] if len(parts) == 2 else self.notify_service
+            self._call_ha_service(domain, service, {
+                'title': f"HAI: {title}",
+                'message': message,
+            })
 
         self._sent_today += 1
         self._last_sent_time = time.time()
@@ -105,12 +129,57 @@ class NotificationEngine:
             notification_type,
             f"{title}: {message}",
         ))
-        # Keep history limited
         if len(self._history) > 50:
             self._history = self._history[-50:]
 
         logger.info(f"Notification sent: [{notification_type}] {title}")
         return True
+
+    def send_actionable(self, title: str, message: str,
+                         actions: list, tag: str = None):
+        """Send actionable notification with buttons to mobile app.
+
+        Args:
+            actions: list of {"action": "slug", "title": "Label"}
+            tag: notification tag for replacement
+        """
+        if not self._can_send():
+            return False
+
+        if not self.notify_service:
+            logger.warning("No notify_service configured, cannot send "
+                           "actionable notification")
+            return False
+
+        parts = self.notify_service.split('.', 1)
+        domain = parts[0] if len(parts) == 2 else 'notify'
+        service = parts[1] if len(parts) == 2 else self.notify_service
+
+        data = {
+            'title': f"HAI: {title}",
+            'message': message,
+            'data': {
+                'actions': actions,
+            },
+        }
+        if tag:
+            data['data']['tag'] = tag
+
+        ok = self._call_ha_service(domain, service, data)
+
+        if ok:
+            self._sent_today += 1
+            self._last_sent_time = time.time()
+            self._history.append((
+                datetime.now(timezone.utc).isoformat(),
+                'feedback',
+                f"{title}: {message}",
+            ))
+            if len(self._history) > 50:
+                self._history = self._history[-50:]
+            logger.info(f"Actionable notification sent: {title}")
+
+        return ok
 
     # ── Notification types ────────────────────────────────────────
 

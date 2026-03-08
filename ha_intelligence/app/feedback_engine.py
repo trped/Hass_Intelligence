@@ -21,6 +21,7 @@ class FeedbackEngine:
         self.mqtt = mqtt_publisher
         self.ml_engine = ml_engine
         self.notification_engine = notification_engine
+        self.activity_inference = None  # Set after ActivityInference created
 
         # Config
         self.confidence_threshold = options.get(
@@ -30,6 +31,7 @@ class FeedbackEngine:
 
         # Rate limiting reuses NotificationEngine config
         self._question_counter = 0
+        self._question_context = {}  # question_id → context for learning
 
         logger.info(
             f"FeedbackEngine initialized "
@@ -108,7 +110,9 @@ class FeedbackEngine:
 
     def ask_activity(self, person_slug: str, person_name: str,
                       room_name: str, candidates: list,
-                      confidence: float, prediction_id: int = None):
+                      confidence: float, prediction_id: int = None,
+                      room_slug: str = '', zone: str = '',
+                      device_states: dict = None):
         """Ask user about person's current activity."""
         options = candidates[:4] + ["Andet"]
         question_text = f"Hvad laver {person_name} i {room_name}?"
@@ -122,6 +126,14 @@ class FeedbackEngine:
             confidence=confidence,
         )
 
+        # Store context for learning when answer arrives
+        self._question_context[q_id] = {
+            'person_slug': person_slug,
+            'room_slug': room_slug,
+            'zone': zone,
+            'device_states': device_states or {},
+        }
+
         self._send_notification(q_id, question_text, options)
         return q_id
 
@@ -129,7 +141,11 @@ class FeedbackEngine:
 
     def _send_notification(self, question_id: int, text: str,
                             options: list):
-        """Send actionable notification via MQTT."""
+        """Send actionable notification via NotificationEngine."""
+        if not self.notification_engine:
+            logger.warning("No notification_engine, cannot send feedback")
+            return
+
         actions = []
         for i, opt in enumerate(options):
             slug = opt.lower().replace(' ', '_').replace('æ', 'ae') \
@@ -139,17 +155,12 @@ class FeedbackEngine:
                 "title": opt,
             })
 
-        payload = {
-            "title": "HAI Feedback",
-            "message": text,
-            "data": {
-                "actions": actions,
-                "tag": f"hai_feedback_{question_id}",
-            }
-        }
-
-        self.mqtt.client.publish(
-            "hai/notify", json.dumps(payload), retain=False)
+        self.notification_engine.send_actionable(
+            title="Feedback",
+            message=text,
+            actions=actions,
+            tag=f"hai_feedback_{question_id}",
+        )
         self._question_counter += 1
         logger.info(f"Feedback question #{question_id}: {text}")
 
@@ -206,9 +217,15 @@ class FeedbackEngine:
 
         # Update learned activities if activity question
         if question['question_type'] == 'activity' and answer != 'Ved ikke':
-            target = question['target']  # person_slug
-            # Activity learning handled by ActivityInference
-            pass
+            ctx = self._question_context.pop(question_id, None)
+            if ctx and self.activity_inference:
+                self.activity_inference.learn_from_feedback(
+                    person_slug=ctx['person_slug'],
+                    room_slug=ctx['room_slug'],
+                    zone=ctx['zone'],
+                    devices_state=ctx['device_states'],
+                    activity=answer.lower().replace(' ', '_'),
+                )
 
     def _answer_to_label(self, question_type: str, answer: str) -> str | None:
         """Convert user answer to ML label."""

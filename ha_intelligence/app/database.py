@@ -237,13 +237,26 @@ class Database:
     # ── Rooms ───────────────────────────────────────────────────
 
     def upsert_room(self, area_id: str, name: str, slug: str):
-        self.execute(
-            """INSERT INTO rooms (area_id, name, slug)
-               VALUES (?, ?, ?)
-               ON CONFLICT(area_id) DO UPDATE SET
-                 name = excluded.name, slug = excluded.slug""",
-            (area_id, name, slug)
-        )
+        # Preserve enabled status for existing rooms
+        existing = self.execute(
+            "SELECT enabled FROM rooms WHERE area_id = ? OR slug = ?",
+            (area_id, slug), fetch=True)
+        if existing:
+            enabled_val = existing[0]['enabled']
+            # Remove stale rows (e.g. area_id changed for same slug)
+            self.execute(
+                "DELETE FROM rooms WHERE slug = ? AND area_id != ?",
+                (slug, area_id))
+            self.execute(
+                """INSERT INTO rooms (area_id, name, slug, enabled)
+                   VALUES (?, ?, ?, ?)
+                   ON CONFLICT(area_id) DO UPDATE SET
+                     name = excluded.name, slug = excluded.slug""",
+                (area_id, name, slug, enabled_val))
+        else:
+            self.execute(
+                "INSERT INTO rooms (area_id, name, slug) VALUES (?, ?, ?)",
+                (area_id, name, slug))
 
     def get_rooms(self, enabled_only: bool = True) -> list:
         if enabled_only:
@@ -254,13 +267,24 @@ class Database:
     # ── Persons ─────────────────────────────────────────────────
 
     def upsert_person(self, entity_id: str, name: str, slug: str):
-        self.execute(
-            """INSERT INTO persons (entity_id, name, slug)
-               VALUES (?, ?, ?)
-               ON CONFLICT(entity_id) DO UPDATE SET
-                 name = excluded.name, slug = excluded.slug""",
-            (entity_id, name, slug)
-        )
+        existing = self.execute(
+            "SELECT enabled FROM persons WHERE entity_id = ? OR slug = ?",
+            (entity_id, slug), fetch=True)
+        if existing:
+            enabled_val = existing[0]['enabled']
+            self.execute(
+                "DELETE FROM persons WHERE slug = ? AND entity_id != ?",
+                (slug, entity_id))
+            self.execute(
+                """INSERT INTO persons (entity_id, name, slug, enabled)
+                   VALUES (?, ?, ?, ?)
+                   ON CONFLICT(entity_id) DO UPDATE SET
+                     name = excluded.name, slug = excluded.slug""",
+                (entity_id, name, slug, enabled_val))
+        else:
+            self.execute(
+                "INSERT INTO persons (entity_id, name, slug) VALUES (?, ?, ?)",
+                (entity_id, name, slug))
 
     def get_persons(self, enabled_only: bool = True) -> list:
         if enabled_only:

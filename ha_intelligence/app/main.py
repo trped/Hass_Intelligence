@@ -811,7 +811,7 @@ class SensorEngine:
         self.mqtt.publish_system_status(
             status=status,
             attributes={
-                'version': '0.8.1',
+                'version': '0.8.2',
                 'events_24h': stats['events_24h'],
                 'events_total': stats['events_total'],
                 'entities_discovered': stats['entities_discovered'],
@@ -938,6 +938,9 @@ async def main():
         options, db=db, mqtt_publisher=mqtt,
         feedback_engine=feedback_engine)
     logger.info("Activity inference initialized")
+
+    # Wire circular dependency
+    feedback_engine.activity_inference = activity_inference
 
     sensor_engine = SensorEngine(
         db, mqtt, discovery, registry=registry, ml_engine=ml_engine,
