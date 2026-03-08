@@ -185,6 +185,16 @@ class Registry:
                     else:
                         logger.error(f"Area registry fetch failed: {msg}")
 
+                    # Fetch states to enrich device_class (entity registry
+                    # often lacks device_class for platform-provided classes)
+                    await ws.send_json({
+                        'id': 4,
+                        'type': 'get_states'
+                    })
+                    msg = await ws.receive_json()
+                    if msg.get('success'):
+                        self._enrich_device_class(msg.get('result', []))
+
         except Exception as e:
             logger.error(f"Registry load error: {e}")
 
@@ -216,6 +226,23 @@ class Registry:
                 'name': ent.get('name') or ent.get('original_name'),
             }
         logger.info(f"Entity registry: {len(self._entities)} entities")
+
+    def _enrich_device_class(self, states: list):
+        """Enrich entity device_class from HA states for entities missing it."""
+        enriched = 0
+        for state in states:
+            eid = state.get('entity_id', '')
+            if eid not in self._entities:
+                continue
+            if self._entities[eid].get('device_class'):
+                continue  # already has device_class
+            attrs = state.get('attributes', {})
+            dc = attrs.get('device_class')
+            if dc:
+                self._entities[eid]['device_class'] = dc
+                enriched += 1
+        if enriched:
+            logger.info(f"Enriched device_class for {enriched} entities from states")
 
     def _parse_device_registry(self, devices: list):
         """Parse device registry response."""
