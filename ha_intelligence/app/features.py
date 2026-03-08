@@ -171,42 +171,79 @@ class FeatureExtractor:
 
     # ── Evidence analysis ─────────────────────────────────────────
 
-    @staticmethod
-    def analyze_evidence(features: dict) -> dict:
+    def analyze_evidence(self, features: dict,
+                         room_state: dict = None) -> dict:
         """Analyze which evidence sources are active in a feature vector.
 
         Returns dict with:
             - sources: list of active evidence type names
             - count: number of active sources
-            - detail: dict of source -> value pairs
+            - detail: dict of source -> value/count pairs
+            - entities: dict of source -> {entity_id: state} for UI display
         """
         sources = []
         detail = {}
+        entities = {}
 
-        # Motion sensors
+        # Motion sensors — include entity_ids from room_state
         active = features.get('sensors_active', 0)
         if active > 0:
             sources.append('motion')
             detail['motion'] = active
+            if room_state:
+                sensor_map = {}
+                for eid, val in room_state.get('sensors', {}).items():
+                    sensor_map[eid] = val
+                entities['motion'] = sensor_map
 
         # EPL zones
         epl_targets = features.get('epl_total_targets', 0)
         if epl_targets > 0:
             sources.append('epl_zone')
             detail['epl_zone'] = epl_targets
+            # Include per-zone detail from features
+            epl_detail = {}
+            for key, val in features.items():
+                if key.startswith('epl_zone_') and key.endswith('_targets'):
+                    zone_num = key.replace('epl_zone_', '').replace('_targets', '')
+                    epl_detail[f'zone_{zone_num}'] = val
+            if epl_detail:
+                entities['epl_zone'] = epl_detail
 
-        # Lights
+        # Lights — include entity_ids from registry context
         lights_on = features.get('lights_on', 0)
         if lights_on > 0:
             sources.append('light')
             detail['light'] = lights_on
+            if room_state and self.registry:
+                area_id = room_state.get('area_id')
+                if area_id:
+                    light_map = {}
+                    for eid in self.registry.get_entities_in_area(area_id):
+                        if eid.startswith('light.'):
+                            ctx = self._context_states.get(eid)
+                            if ctx:
+                                light_map[eid] = ctx['state']
+                    if light_map:
+                        entities['light'] = light_map
 
-        # Media
+        # Media — include entity_ids from registry context
         media_active = features.get('media_active', 0)
         media_playing = features.get('media_playing', 0)
         if media_active > 0 or media_playing > 0:
             sources.append('media')
             detail['media'] = media_playing or media_active
+            if room_state and self.registry:
+                area_id = room_state.get('area_id')
+                if area_id:
+                    media_map = {}
+                    for eid in self.registry.get_entities_in_area(area_id):
+                        if eid.startswith('media_player.'):
+                            ctx = self._context_states.get(eid)
+                            if ctx:
+                                media_map[eid] = ctx['state']
+                    if media_map:
+                        entities['media'] = media_map
 
         # TV power
         if features.get('tv_active', 0):
@@ -214,11 +251,22 @@ class FeatureExtractor:
                 sources.append('media')
             detail['tv_watts'] = features.get('tv_power_watts', 0)
 
-        # Climate
+        # Climate — include entity_ids
         climate_on = features.get('climate_on', 0)
         if climate_on > 0:
             sources.append('climate')
             detail['climate'] = climate_on
+            if room_state and self.registry:
+                area_id = room_state.get('area_id')
+                if area_id:
+                    climate_map = {}
+                    for eid in self.registry.get_entities_in_area(area_id):
+                        if eid.startswith('climate.'):
+                            ctx = self._context_states.get(eid)
+                            if ctx:
+                                climate_map[eid] = ctx['state']
+                    if climate_map:
+                        entities['climate'] = climate_map
 
         # CO2
         if features.get('co2_elevated', 0):
@@ -229,6 +277,7 @@ class FeatureExtractor:
             'sources': sources,
             'count': len(sources),
             'detail': detail,
+            'entities': entities,
         }
 
     # ── Motion tracking ──────────────────────────────────────────

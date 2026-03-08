@@ -35,6 +35,7 @@ try:
     from mqtt_publisher import MQTTPublisher
     from notifications import NotificationEngine
     from registry import Registry
+    from settings import SettingsManager
     from web_ui import create_app
 except Exception as e:
     _write_crash(f"IMPORT ERROR: {type(e).__name__}: {e}", exc=e)
@@ -93,7 +94,8 @@ class SensorEngine:
                  registry: Registry = None, ml_engine: MLEngine = None,
                  notification_engine: 'NotificationEngine' = None,
                  feedback_engine: 'FeedbackEngine' = None,
-                 activity_engine: 'ActivityInference' = None):
+                 activity_engine: 'ActivityInference' = None,
+                 settings_manager: 'SettingsManager' = None):
         self.db = db
         self.mqtt = mqtt
         self.discovery = discovery
@@ -102,16 +104,18 @@ class SensorEngine:
         self.notification_engine = notification_engine
         self.feedback_engine = feedback_engine
         self.activity_engine = activity_engine
+        self.settings = settings_manager
         self._room_states = {}   # area_id -> last known state info
         self._person_states = {} # entity_id -> last known state info
         self._tracker_to_person = {}  # device_tracker entity_id -> person entity_id
         self._person_rooms = {}  # person_entity -> {area_id, area_name, confidence, source, distance, updated_at}
         self._bermuda_to_person = {}  # bermuda_sensor_entity -> person_entity
         self._netatmo_to_person = {}  # 'troels' -> 'person.troels' (Netatmo camera face detection)
+        self._entity_states = {}     # entity_id -> {state, attributes} for tracked non-sensor entities
         self._publish_interval = 60  # seconds
         self._stale_threshold = timedelta(minutes=30)
         self._last_predictions = {}  # sensor_target -> prediction_id (for feedback loop)
-        self._insights_cache = {'persons': {}, 'rooms': {}}  # Cache for web UI insights tab
+        self._insights_cache = {'persons': {}, 'rooms': {}, 'hustilstand': {}}  # Cache for web UI insights tab
 
     async def on_state_change(self, entity_id: str, old_state: str,
                                new_state: str, attributes: dict):
@@ -176,6 +180,13 @@ class SensorEngine:
         # Track device_tracker → person state
         if domain == 'device_tracker':
             self._update_tracker_state(entity_id, new_state, attributes)
+
+        # Track input_select entities (hustilstand, tid_pa_dagen, etc.)
+        if domain == 'input_select':
+            self._entity_states[entity_id] = {
+                'state': new_state,
+                'attributes': attributes,
+            }
 
         # Phase 4: Netatmo camera face detection → person room (highest confidence)
         if entity_id.startswith('input_text.netatmo_sidst_set_'):
@@ -258,6 +269,7 @@ class SensorEngine:
         tracker_count = 0
         bermuda_count = 0
         occupancy_count = 0
+        input_select_count = 0
 
         for state_obj in all_states:
             entity_id = state_obj.get('entity_id', '')
@@ -295,6 +307,14 @@ class SensorEngine:
                     )
                     bermuda_count += 1
 
+            # input_select entities → _entity_states (hustilstand etc.)
+            elif domain == 'input_select':
+                self._entity_states[entity_id] = {
+                    'state': state,
+                    'attributes': attrs,
+                }
+                input_select_count += 1
+
             # Motion/occupancy sensors → _room_states
             elif domain == 'binary_sensor' and any(
                 kw in entity_id for kw in ('motion', 'occupancy', 'presence', 'mmwave')
@@ -311,7 +331,7 @@ class SensorEngine:
         logger.info(
             f"Loaded initial states: {person_count} persons, "
             f"{tracker_count} trackers, {bermuda_count} bermuda, "
-            f"{occupancy_count} occupancy sensors"
+            f"{occupancy_count} occupancy, {input_select_count} input_selects"
         )
 
     def _cleanup_stale_states(self):
@@ -527,7 +547,7 @@ class SensorEngine:
                 await self._publish_rooms()
                 await self._publish_persons()
                 await self._publish_system()
-                await self._publish_household()
+                await self._publish_hustilstand()
 
                 # Check notification triggers
                 if self.notification_engine:
@@ -573,15 +593,41 @@ class SensorEngine:
             ml_samples = 0
             source = 'rule_based'
 
+            # Person cross-check: any person placed in this room?
+            persons_in_room = []
+            for p_ent, p_data in self._person_rooms.items():
+                p_area = p_data.get('area_id', '')
+                p_conf = p_data.get('confidence', 0)
+                if p_area == area_id and p_conf >= 0.5:
+                    persons_in_room.append(p_ent)
+            # Also check ML engine best room estimates
+            if self.ml_engine:
+                for p_ent in self._person_states:
+                    if p_ent in [p for p in persons_in_room]:
+                        continue
+                    best = self.ml_engine.get_person_best_room(p_ent)
+                    if best and best.get('room') == area_id and best.get('confidence', 0) >= 0.5:
+                        persons_in_room.append(p_ent)
+
+            hard_evidence = any_occupied or len(persons_in_room) > 0
+
             if self.ml_engine:
                 ml_result = self.ml_engine.predict_room(area_id, room_info)
                 if ml_result:
                     ml_state, ml_confidence, source_tag = ml_result
                     model = self.ml_engine.models.room_models.get(area_id)
                     ml_samples = model.samples_seen if model else 0
-                    # ML wins if higher confidence
+                    # ML wins if higher confidence, BUT NOT if overriding hard evidence
                     if ml_confidence > rule_confidence:
-                        source = source_tag
+                        if ml_state == 'empty' and hard_evidence:
+                            logger.info(
+                                f"ML override guard: {area_id} ML={ml_state} "
+                                f"({ml_confidence:.2f}) blocked — "
+                                f"sensors={sum(1 for v in sensors.values() if v == 'on')}/{len(sensors)}, "
+                                f"persons={len(persons_in_room)}"
+                            )
+                        else:
+                            source = source_tag
 
             # Choose best prediction
             if source != 'rule_based' and ml_state:
@@ -590,6 +636,16 @@ class SensorEngine:
             else:
                 state = rule_state
                 confidence = rule_confidence
+
+            # Room ↔ Person cross-check: force occupied if persons are placed here
+            if state == 'empty' and persons_in_room:
+                state = 'occupied'
+                confidence = max(confidence, 0.75)
+                source = 'person_crosscheck'
+                logger.info(
+                    f"Person cross-check: {area_id} forced occupied "
+                    f"(persons: {persons_in_room})"
+                )
 
             # Phase 2: Evidence analysis
             evidence = {'sources': [], 'count': 0, 'detail': {}}
@@ -648,6 +704,7 @@ class SensorEngine:
                 'evidence_sources': evidence['sources'],
                 'evidence_count': evidence['count'],
                 'evidence_detail': evidence['detail'],
+                'evidence_entities': evidence.get('entities', {}),
                 # Phase 3: State priors
                 'prior_state': prior_info.get('best_state'),
                 'prior_probability': prior_info.get('best_probability', 0.0),
@@ -685,9 +742,28 @@ class SensorEngine:
             ha_state = info.get('ha_state', 'unknown')
             is_home = ha_state == 'home'
 
+            # Zone → activity mapping from settings
+            zone_activity = None
+            zone_name = None
+            if ha_state not in ('home', 'not_home', 'unknown', 'unavailable') and self.settings:
+                zone_map = self.settings.get_zone_activity_map()
+                # Try exact match (e.g. 'zone.arbejde' or 'Arbejde')
+                zone_key = f"zone.{ha_state.lower().replace(' ', '_')}"
+                zone_entry = zone_map.get(zone_key) or zone_map.get(ha_state.lower())
+                if zone_entry:
+                    zone_activity = zone_entry.get('activity')
+                    zone_name = zone_entry.get('name', ha_state)
+
             # Rule-based state
-            rule_state = 'active' if is_home else 'away'
-            rule_confidence = 0.8 if ha_state != 'unknown' else 0.3
+            if zone_activity:
+                rule_state = zone_activity
+                rule_confidence = 0.85
+            elif is_home:
+                rule_state = 'active'
+                rule_confidence = 0.8
+            else:
+                rule_state = 'away'
+                rule_confidence = 0.8 if ha_state != 'unknown' else 0.3
 
             # ML prediction
             ml_state = None
@@ -715,7 +791,9 @@ class SensorEngine:
                 confidence = rule_confidence
 
             # Feedback loop: close previous prediction with current actual state
-            if ha_state == 'home':
+            if zone_activity:
+                actual_state = zone_activity
+            elif ha_state == 'home':
                 actual_state = 'active'
             elif ha_state == 'not_home':
                 actual_state = 'away'
@@ -823,8 +901,10 @@ class SensorEngine:
             person_attrs = {
                 'home': is_home,
                 'ha_state': ha_state,
-                'location': 'home' if is_home else 'away',
-                'room': room_name if is_home else 'away',
+                'location': 'home' if is_home else (zone_name or 'away'),
+                'room': room_name if is_home else (zone_name or 'away'),
+                'ha_zone': zone_name,
+                'zone_activity': zone_activity,
                 'room_id': room_id,
                 'room_confidence': round(room_confidence, 2),
                 'room_source': room_source,
@@ -925,7 +1005,7 @@ class SensorEngine:
         self.mqtt.publish_system_status(
             status=status,
             attributes={
-                'version': '0.8.9',
+                'version': '0.9.0',
                 'events_24h': stats['events_24h'],
                 'events_total': stats['events_total'],
                 'entities_discovered': stats['entities_discovered'],
@@ -936,8 +1016,12 @@ class SensorEngine:
             }
         )
 
-    async def _publish_household(self):
-        """Publish household mode sensor based on person states + time."""
+    async def _publish_hustilstand(self):
+        """Publish sensor.hai_hustilstand synced from HA's input_select.hus_tilstand.
+
+        Reads HA state via event listener cache. Falls back to local inference
+        if HA entity is unavailable.
+        """
         now = datetime.now(timezone.utc)
         hour = now.hour
         weekday = now.weekday()
@@ -955,20 +1039,80 @@ class SensorEngine:
             if any(v == 'on' for v in info.get('sensors', {}).values())
         )
 
-        # Infer household mode
-        if persons_home == 0:
-            mode = 'tom'
-        elif hour < 6 or hour >= 23:
-            mode = 'nat'
-        elif 6 <= hour < 10:
-            mode = 'morgen'
-        elif weekday >= 5:
-            mode = 'weekend'
-        else:
-            mode = 'hverdag'
+        # Get hustilstand config from settings
+        ht_config = {}
+        if self.settings:
+            ht_config = self.settings.get_hustilstand_config()
 
-        self.mqtt.publish_household(
+        ha_entity = ht_config.get('entity_id', 'input_select.hus_tilstand')
+        state_map = ht_config.get('state_map', {})
+        enabled = ht_config.get('enabled', True)
+
+        # Try to read HA state from tracked entities
+        ha_state = self._entity_states.get(ha_entity)
+        source = 'unknown'
+
+        if enabled and ha_state:
+            # Map HA state through configurable state_map
+            raw = ha_state.get('state', '')
+            mode = state_map.get(raw, raw) if state_map else raw
+            source = 'ha_entity'
+        else:
+            # Fallback: local inference (same logic as old _publish_household)
+            if persons_home == 0:
+                mode = 'ude'
+            elif hour < 6 or hour >= 23:
+                mode = 'nat'
+            else:
+                mode = 'hjemme'
+            source = 'local_inference'
+
+        # Build person list
+        persons_at_home = [
+            eid.replace('person.', '')
+            for eid, info in self._person_states.items()
+            if info.get('ha_state') == 'home'
+        ]
+
+        self.mqtt.publish_hustilstand(
             state=mode,
+            attributes={
+                'ha_entity': ha_entity,
+                'source': source,
+                'persons_home': persons_home,
+                'persons_total': total_persons,
+                'persons_at_home': persons_at_home,
+                'rooms_active': rooms_active,
+                'occupancy_ratio': round(persons_home / total_persons, 2),
+                'hour': hour,
+                'weekday': weekday,
+            }
+        )
+
+        # Cache for insights API
+        self._insights_cache['hustilstand'] = {
+            'state': mode,
+            'source': source,
+            'ha_entity': ha_entity,
+            'persons_home': persons_home,
+            'persons_total': total_persons,
+            'persons_at_home': persons_at_home,
+            'rooms_active': rooms_active,
+        }
+
+        # Also publish legacy household sensor for backwards compat
+        legacy_map = {
+            'hjemme': 'hverdag' if weekday < 5 else 'weekend',
+            'nat': 'nat',
+            'ude': 'tom',
+            'kun_hunde': 'tom',
+            'ferie': 'tom',
+        }
+        legacy_mode = legacy_map.get(mode, mode)
+        if 6 <= hour < 10 and mode == 'hjemme':
+            legacy_mode = 'morgen'
+        self.mqtt.publish_household(
+            state=legacy_mode,
             attributes={
                 'persons_home': persons_home,
                 'persons_total': total_persons,
@@ -994,12 +1138,16 @@ async def periodic_feedback_status(feedback_engine):
 
 async def main():
     logger.info("=" * 50)
-    logger.info("HA Intelligence v0.8.9 starting...")
+    logger.info("HA Intelligence v0.9.0 starting...")
     logger.info("=" * 50)
 
     # Load config
     options = load_options()
     os.environ.setdefault('LOG_LEVEL', options.get('log_level', 'info'))
+
+    # Initialize settings manager (writable app settings)
+    settings = SettingsManager(options)
+    logger.info("Settings manager initialized")
 
     # Resolve SUPERVISOR_TOKEN (may be in S6 env file, not Docker env)
     token = resolve_supervisor_token()
@@ -1070,6 +1218,7 @@ async def main():
         notification_engine=notification_engine,
         feedback_engine=feedback_engine,
         activity_engine=activity_inference,
+        settings_manager=settings,
     )
 
     # Initialize BLE person-room tracking from config
@@ -1100,7 +1249,8 @@ async def main():
                      notification_engine=notification_engine,
                      feedback_engine=feedback_engine,
                      activity_engine=activity_inference,
-                     sensor_engine=sensor_engine)
+                     sensor_engine=sensor_engine,
+                     settings_manager=settings)
 
     # Start all tasks
     loop = asyncio.get_event_loop()

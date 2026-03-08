@@ -65,7 +65,7 @@ class MQTTPublisher:
                 "name": "HA Intelligence",
                 "manufacturer": "Hyggebo",
                 "model": "Intelligence System",
-                "sw_version": "0.8.9",
+                "sw_version": "0.9.0",
             },
         }
         if icon:
@@ -132,12 +132,22 @@ class MQTTPublisher:
     # ── Household sensor ─────────────────────────────────────────
 
     def publish_household(self, state: str, attributes: dict):
-        """Publish sensor.hai_household with household mode."""
+        """Publish sensor.hai_household with household mode (legacy)."""
         self._publish_discovery(
             'sensor', 'household', 'HAI Household',
             icon="mdi:home-account"
         )
         self._publish_state('household', state, attributes)
+
+    # ── Hustilstand sensor ─────────────────────────────────────
+
+    def publish_hustilstand(self, state: str, attributes: dict):
+        """Publish sensor.hai_hustilstand with HA-synced house state."""
+        self._publish_discovery(
+            'sensor', 'hustilstand', 'HAI Hustilstand',
+            icon="mdi:home-thermometer"
+        )
+        self._publish_state('hustilstand', state, attributes)
 
     def remove_sensor(self, object_id: str):
         """Remove a sensor from HA by publishing empty config."""

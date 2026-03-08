@@ -15,7 +15,8 @@ INGRESS_PATH = os.environ.get('INGRESS_PATH', '')
 
 def create_app(db, event_listener, mqtt_pub, registry=None, ml_engine=None,
                notification_engine=None, feedback_engine=None,
-               activity_engine=None, sensor_engine=None) -> FastAPI:
+               activity_engine=None, sensor_engine=None,
+               settings_manager=None) -> FastAPI:
     """Create FastAPI app with ingress support."""
 
     # Strip trailing slashes from ingress path to avoid double-slash issues
@@ -321,6 +322,74 @@ def create_app(db, event_listener, mqtt_pub, registry=None, ml_engine=None,
             return sensor_engine._insights_cache
         return {'persons': {}, 'rooms': {}}
 
+    # ── Settings API ──────────────────────────────────────────────
+
+    @app.get("/api/settings")
+    async def get_settings():
+        """Get all settings."""
+        if not settings_manager:
+            return {'error': 'Settings not initialized'}
+        return settings_manager.get_all()
+
+    @app.get("/api/settings/{category}")
+    async def get_settings_category(category: str):
+        """Get settings for a specific category."""
+        if not settings_manager:
+            return {'error': 'Settings not initialized'}
+        data = settings_manager.get_category(category)
+        if data is None:
+            return JSONResponse({'error': f'Unknown category: {category}'}, status_code=404)
+        return data
+
+    @app.post("/api/settings/{category}")
+    async def update_settings_category(category: str, request: Request):
+        """Update settings for a category (merge)."""
+        if not settings_manager:
+            return JSONResponse({'error': 'Settings not initialized'}, status_code=500)
+        try:
+            body = await request.json()
+            settings_manager.update_category(category, body)
+            return {'ok': True, 'category': category}
+        except Exception as e:
+            return JSONResponse({'error': str(e)}, status_code=400)
+
+    @app.put("/api/settings/{category}")
+    async def replace_settings_category(category: str, request: Request):
+        """Replace entire category settings."""
+        if not settings_manager:
+            return JSONResponse({'error': 'Settings not initialized'}, status_code=500)
+        try:
+            body = await request.json()
+            settings_manager.set_category(category, body)
+            return {'ok': True, 'category': category}
+        except Exception as e:
+            return JSONResponse({'error': str(e)}, status_code=400)
+
+    @app.post("/api/settings/{category}/reset")
+    async def reset_settings_category(category: str):
+        """Reset a category to defaults."""
+        if not settings_manager:
+            return JSONResponse({'error': 'Settings not initialized'}, status_code=500)
+        settings_manager.reset_category(category)
+        return {'ok': True, 'category': category, 'reset': True}
+
+    @app.get("/api/options")
+    async def get_options():
+        """Get HA Supervisor options (read-only)."""
+        if not settings_manager:
+            return {'error': 'Settings not initialized'}
+        return {
+            'mqtt_host': settings_manager.get_option('mqtt_host'),
+            'mqtt_port': settings_manager.get_option('mqtt_port'),
+            'mqtt_user': settings_manager.get_option('mqtt_user'),
+            'feedback_active': settings_manager.get_option('feedback_active'),
+            'feedback_max_daily': settings_manager.get_option('feedback_max_daily'),
+            'feedback_cooldown_min': settings_manager.get_option('feedback_cooldown_min'),
+            'feedback_quiet_start': settings_manager.get_option('feedback_quiet_start'),
+            'feedback_quiet_end': settings_manager.get_option('feedback_quiet_end'),
+            'log_level': settings_manager.get_option('log_level'),
+        }
+
     return app
 
 
@@ -437,6 +506,35 @@ def get_dashboard_html() -> str:
   .state-badge.occupied { background:rgba(34,197,94,0.15); color:var(--green); }
   .state-badge.empty { background:rgba(239,68,68,0.15); color:var(--red); }
   .insight-empty { color:var(--text-dim); font-size:14px; text-align:center; padding:40px 0; }
+
+  /* Settings tab */
+  .settings-layout { display:flex; gap:16px; min-height:400px; }
+  .settings-nav { width:180px; flex-shrink:0; display:flex; flex-direction:column; gap:4px; }
+  .settings-nav button { background:var(--card); border:1px solid var(--border); color:var(--text); padding:10px 14px; border-radius:8px; cursor:pointer; text-align:left; font-size:13px; transition:all 0.2s; }
+  .settings-nav button:hover { border-color:var(--accent); }
+  .settings-nav button.active { background:var(--accent); color:#fff; border-color:var(--accent); }
+  .settings-page { flex:1; display:none; }
+  .settings-page.active { display:block; }
+  .settings-card { background:var(--card); border:1px solid var(--border); border-radius:10px; padding:20px; margin-bottom:16px; }
+  .settings-card h3 { margin:0 0 12px; font-size:15px; }
+  .settings-field { margin-bottom:14px; }
+  .settings-field label { display:block; font-size:12px; color:var(--text-dim); margin-bottom:4px; }
+  .settings-field input, .settings-field select { width:100%; background:var(--bg); border:1px solid var(--border); color:var(--text); padding:8px 10px; border-radius:6px; font-size:13px; box-sizing:border-box; }
+  .settings-field input:focus, .settings-field select:focus { border-color:var(--accent); outline:none; }
+  .settings-field .hint { font-size:11px; color:var(--text-dim); margin-top:2px; }
+  .settings-actions { display:flex; gap:8px; margin-top:16px; }
+  .settings-actions button { padding:8px 16px; border-radius:6px; font-size:13px; cursor:pointer; border:none; }
+  .btn-save { background:var(--accent); color:#fff; }
+  .btn-save:hover { opacity:0.9; }
+  .btn-reset { background:var(--card); color:var(--text-dim); border:1px solid var(--border) !important; }
+  .btn-reset:hover { border-color:var(--red) !important; color:var(--red); }
+  .btn-add { background:rgba(34,197,94,0.15); color:var(--green); border:1px solid var(--green) !important; font-size:12px; padding:6px 12px; }
+  .btn-delete { background:rgba(239,68,68,0.1); color:var(--red); border:1px solid transparent !important; font-size:11px; padding:4px 8px; cursor:pointer; border-radius:4px; }
+  .btn-delete:hover { border-color:var(--red) !important; }
+  .zone-row { display:flex; gap:8px; align-items:center; margin-bottom:8px; padding:8px; background:var(--bg); border-radius:6px; }
+  .zone-row input { flex:1; }
+  .settings-toast { position:fixed; bottom:20px; right:20px; background:var(--green); color:#fff; padding:10px 20px; border-radius:8px; font-size:13px; z-index:100; display:none; }
+  @media(max-width:640px) { .settings-layout { flex-direction:column; } .settings-nav { width:100%; flex-direction:row; overflow-x:auto; } }
 </style>
 </head>
 <body>
@@ -451,6 +549,7 @@ def get_dashboard_html() -> str:
 <div class="tab-bar">
   <button class="tab-btn active" data-tab="system" onclick="switchTab('system')">System</button>
   <button class="tab-btn" data-tab="insights" onclick="switchTab('insights')">Indsigt</button>
+  <button class="tab-btn" data-tab="settings" onclick="switchTab('settings');loadSettings()">Indstillinger</button>
 </div>
 
 <div id="tab-system" class="tab-content active">
@@ -516,10 +615,120 @@ def get_dashboard_html() -> str:
 </div><!-- /tab-system -->
 
 <div id="tab-insights" class="tab-content">
+  <div id="hustilstand-card" class="card" style="margin-bottom:16px;display:none">
+    <div style="display:flex;align-items:center;justify-content:space-between">
+      <h2 style="margin:0">&#127968; Hustilstand</h2>
+      <span id="hust-state-badge" class="state-badge"></span>
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:8px;margin-top:12px">
+      <div class="stat-box"><div class="stat-value" id="hust-persons-home">-</div><div class="stat-label">Hjemme</div></div>
+      <div class="stat-box"><div class="stat-value" id="hust-rooms-active">-</div><div class="stat-label">Aktive rum</div></div>
+      <div class="stat-box"><div class="stat-value" id="hust-source">-</div><div class="stat-label">Kilde</div></div>
+    </div>
+    <div id="hust-persons-list" style="margin-top:8px;font-size:12px;color:var(--text-dim)"></div>
+  </div>
   <div class="insight-grid" id="person-insights"></div>
   <div class="insight-grid" id="room-insights"></div>
   <div id="insights-empty" class="insight-empty" style="display:none">Venter paa data... Indsigt vises naar foerste publish-cyklus er koert.</div>
 </div><!-- /tab-insights -->
+
+<div id="tab-settings" class="tab-content">
+<div class="settings-layout">
+  <div class="settings-nav">
+    <button class="active" data-page="s-hustilstand" onclick="switchSettingsPage('s-hustilstand')">Hustilstand</button>
+    <button data-page="s-zones" onclick="switchSettingsPage('s-zones')">Zoner</button>
+    <button data-page="s-ml" onclick="switchSettingsPage('s-ml')">ML Model</button>
+    <button data-page="s-system" onclick="switchSettingsPage('s-system')">System</button>
+  </div>
+  <div style="flex:1">
+
+    <!-- Hustilstand -->
+    <div id="s-hustilstand" class="settings-page active">
+      <div class="settings-card">
+        <h3>Hustilstand Sensor</h3>
+        <p style="font-size:12px;color:var(--text-dim);margin-bottom:14px">Synkroniser sensor.hai_hustilstand med en HA input_select</p>
+        <div class="settings-field">
+          <label>Aktiveret</label>
+          <label class="toggle-switch" style="margin-top:4px">
+            <input type="checkbox" id="hust-enabled">
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+        <div class="settings-field">
+          <label>Entity ID</label>
+          <input type="text" id="hust-entity" placeholder="input_select.hus_tilstand">
+          <div class="hint">HA entity der spoeres (input_select)</div>
+        </div>
+        <div class="settings-card" style="margin-top:12px;padding:14px;background:var(--bg)">
+          <h3 style="font-size:13px">State Map</h3>
+          <p style="font-size:11px;color:var(--text-dim);margin-bottom:10px">HA state &rarr; HAI state</p>
+          <div id="hust-statemap"></div>
+        </div>
+        <div class="settings-actions">
+          <button class="btn-save" onclick="saveHustilstand()">Gem</button>
+          <button class="btn-reset" onclick="resetCategory('hustilstand')">Nulstil</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Zones -->
+    <div id="s-zones" class="settings-page">
+      <div class="settings-card">
+        <h3>Zone &rarr; Aktivitet</h3>
+        <p style="font-size:12px;color:var(--text-dim);margin-bottom:14px">Map HA-zoner til aktiviteter for personer der er ude</p>
+        <div id="zone-map-list"></div>
+        <button class="btn-add" onclick="addZoneRow()" style="margin-top:8px">+ Tilfoej zone</button>
+        <div class="settings-actions">
+          <button class="btn-save" onclick="saveZones()">Gem</button>
+          <button class="btn-reset" onclick="resetCategory('activity')">Nulstil</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ML -->
+    <div id="s-ml" class="settings-page">
+      <div class="settings-card">
+        <h3>ML Parametre</h3>
+        <div class="settings-field">
+          <label>Threshold (min. samples foer ML bruges)</label>
+          <input type="number" id="ml-threshold" min="10" max="500" step="10">
+        </div>
+        <div class="settings-field">
+          <label>ML Weight (andel af ML i endelig confidence)</label>
+          <input type="number" id="ml-weight" min="0" max="1" step="0.05">
+        </div>
+        <div class="settings-field">
+          <label>Prior Weight (andel af prior i endelig confidence)</label>
+          <input type="number" id="ml-prior-weight" min="0" max="1" step="0.05">
+          <div class="hint">ML Weight + Prior Weight boer vaere 1.0</div>
+        </div>
+        <div class="settings-actions">
+          <button class="btn-save" onclick="saveML()">Gem</button>
+          <button class="btn-reset" onclick="resetCategory('ml')">Nulstil</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- System -->
+    <div id="s-system" class="settings-page">
+      <div class="settings-card">
+        <h3>System</h3>
+        <div class="settings-field">
+          <label>Publish interval (sekunder)</label>
+          <input type="number" id="sys-interval" min="10" max="600" step="5">
+          <div class="hint">Hvor ofte sensorer opdateres via MQTT</div>
+        </div>
+        <div class="settings-actions">
+          <button class="btn-save" onclick="saveSystem()">Gem</button>
+          <button class="btn-reset" onclick="resetCategory('system')">Nulstil</button>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</div>
+<div class="settings-toast" id="settings-toast">Gemt!</div>
+</div><!-- /tab-settings -->
 
 <script>
 const BASE = window.location.pathname.replace(/\/+$/, '');
@@ -914,6 +1123,7 @@ function renderRoomInsights(rooms) {
       ${evidCount > 0 ? `<div class="insight-section">
         <h4>Evidence (${evidCount} kilder)</h4>
         ${evidDetail.map(e => `<div class="evidence-item"><span class="evidence-dot"></span>${e}</div>`).join('')}
+        ${Object.keys(r.evidence_entities || {}).length ? `<div style="margin-top:6px;font-size:11px;color:var(--text-dim)">${Object.entries(r.evidence_entities).map(([eid,name]) => name || eid).join(', ')}</div>` : ''}
       </div>` : ''}
       <div class="insight-section">
         <h4>ML Beslutning</h4>
@@ -928,14 +1138,162 @@ function renderRoomInsights(rooms) {
   }).join('');
 }
 
+function renderHustilstand(ht) {
+  const card = document.getElementById('hustilstand-card');
+  if (!ht || !ht.state) { card.style.display = 'none'; return; }
+  card.style.display = 'block';
+  const badge = document.getElementById('hust-state-badge');
+  badge.textContent = ht.state;
+  badge.className = 'state-badge ' + (ht.state === 'hjemme' ? 'active' : ht.state === 'nat' ? 'empty' : 'occupied');
+  document.getElementById('hust-persons-home').textContent = (ht.persons_home || 0) + '/' + (ht.persons_total || 0);
+  document.getElementById('hust-rooms-active').textContent = ht.rooms_active || 0;
+  document.getElementById('hust-source').textContent = ht.source === 'ha_entity' ? 'HA' : 'lokal';
+  const pList = ht.persons_at_home || [];
+  document.getElementById('hust-persons-list').textContent = pList.length ? 'Hjemme: ' + pList.join(', ') : '';
+}
+
 async function loadInsights() {
   try {
     const data = await fetchJson('/api/insights');
     const hasData = Object.keys(data.persons || {}).length > 0 || Object.keys(data.rooms || {}).length > 0;
     document.getElementById('insights-empty').style.display = hasData ? 'none' : 'block';
+    renderHustilstand(data.hustilstand || {});
     renderPersonInsights(data.persons || {});
     renderRoomInsights(data.rooms || {});
   } catch(e) { console.error('loadInsights error', e); }
+}
+
+// ── Settings tab ──────────────────────────────────
+function switchSettingsPage(pageId) {
+  document.querySelectorAll('.settings-nav button').forEach(b => b.classList.remove('active'));
+  document.querySelectorAll('.settings-page').forEach(p => p.classList.remove('active'));
+  document.querySelector(`.settings-nav [data-page="${pageId}"]`).classList.add('active');
+  document.getElementById(pageId).classList.add('active');
+}
+
+function showToast(msg) {
+  const t = document.getElementById('settings-toast');
+  t.textContent = msg || 'Gemt!';
+  t.style.display = 'block';
+  setTimeout(() => t.style.display = 'none', 2000);
+}
+
+async function loadSettings() {
+  try {
+    const all = await fetchJson('/api/settings');
+    // Hustilstand
+    const h = all.hustilstand || {};
+    document.getElementById('hust-enabled').checked = h.enabled !== false;
+    document.getElementById('hust-entity').value = h.entity_id || 'input_select.hus_tilstand';
+    renderStateMap(h.state_map || {});
+    // Zones
+    renderZoneMap((all.activity || {}).zone_map || {});
+    // ML
+    const ml = all.ml || {};
+    document.getElementById('ml-threshold').value = ml.threshold || 50;
+    document.getElementById('ml-weight').value = ml.ml_weight || 0.7;
+    document.getElementById('ml-prior-weight').value = ml.prior_weight || 0.3;
+    // System
+    const sys = all.system || {};
+    document.getElementById('sys-interval').value = sys.publish_interval || 60;
+  } catch(e) { console.error('loadSettings error', e); }
+}
+
+function renderStateMap(map) {
+  const el = document.getElementById('hust-statemap');
+  const entries = Object.entries(map);
+  if (!entries.length) { el.innerHTML = '<p style="color:var(--text-dim);font-size:12px">Ingen state map</p>'; return; }
+  el.innerHTML = entries.map(([k, v]) =>
+    `<div class="zone-row">
+      <input type="text" value="${k}" data-orig="${k}" class="smap-key" placeholder="HA state">
+      <span style="color:var(--text-dim)">&rarr;</span>
+      <input type="text" value="${v}" class="smap-val" placeholder="HAI state">
+    </div>`
+  ).join('');
+}
+
+function renderZoneMap(map) {
+  const el = document.getElementById('zone-map-list');
+  const entries = Object.entries(map);
+  if (!entries.length) { el.innerHTML = ''; return; }
+  el.innerHTML = entries.map(([zone, cfg]) => {
+    const act = typeof cfg === 'string' ? cfg : (cfg.activity || '');
+    const name = typeof cfg === 'object' ? (cfg.name || '') : '';
+    return `<div class="zone-row">
+      <input type="text" value="${zone}" class="zmap-zone" placeholder="zone.xxx">
+      <span style="color:var(--text-dim)">&rarr;</span>
+      <input type="text" value="${act}" class="zmap-act" placeholder="aktivitet">
+      <input type="text" value="${name}" class="zmap-name" placeholder="navn" style="max-width:100px">
+      <button class="btn-delete" onclick="this.parentElement.remove()">&#10005;</button>
+    </div>`;
+  }).join('');
+}
+
+function addZoneRow(zone, activity, name) {
+  const el = document.getElementById('zone-map-list');
+  const row = document.createElement('div');
+  row.className = 'zone-row';
+  row.innerHTML = `
+    <input type="text" value="${zone||''}" class="zmap-zone" placeholder="zone.xxx">
+    <span style="color:var(--text-dim)">&rarr;</span>
+    <input type="text" value="${activity||''}" class="zmap-act" placeholder="aktivitet">
+    <input type="text" value="${name||''}" class="zmap-name" placeholder="navn" style="max-width:100px">
+    <button class="btn-delete" onclick="this.parentElement.remove()">&#10005;</button>`;
+  el.appendChild(row);
+}
+
+async function saveHustilstand() {
+  const data = {
+    enabled: document.getElementById('hust-enabled').checked,
+    entity_id: document.getElementById('hust-entity').value.trim(),
+    state_map: {}
+  };
+  document.querySelectorAll('#hust-statemap .zone-row').forEach(row => {
+    const k = row.querySelector('.smap-key').value.trim();
+    const v = row.querySelector('.smap-val').value.trim();
+    if (k && v) data.state_map[k] = v;
+  });
+  await fetch(BASE + '/api/settings/hustilstand', {method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify(data)});
+  showToast('Hustilstand gemt!');
+}
+
+async function saveZones() {
+  const zone_map = {};
+  document.querySelectorAll('#zone-map-list .zone-row').forEach(row => {
+    const zone = row.querySelector('.zmap-zone').value.trim();
+    const act = row.querySelector('.zmap-act').value.trim();
+    const name = row.querySelector('.zmap-name').value.trim();
+    if (zone && act) {
+      zone_map[zone] = name ? {activity: act, name: name} : act;
+    }
+  });
+  await fetch(BASE + '/api/settings/activity', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({zone_map: zone_map})});
+  showToast('Zoner gemt!');
+}
+
+async function saveML() {
+  const data = {
+    threshold: parseInt(document.getElementById('ml-threshold').value) || 50,
+    ml_weight: parseFloat(document.getElementById('ml-weight').value) || 0.7,
+    prior_weight: parseFloat(document.getElementById('ml-prior-weight').value) || 0.3,
+  };
+  await fetch(BASE + '/api/settings/ml', {method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify(data)});
+  showToast('ML parametre gemt!');
+}
+
+async function saveSystem() {
+  const data = {
+    publish_interval: parseInt(document.getElementById('sys-interval').value) || 60,
+  };
+  await fetch(BASE + '/api/settings/system', {method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify(data)});
+  showToast('System gemt!');
+}
+
+async function resetCategory(cat) {
+  if (!confirm('Nulstil ' + cat + ' til standardvaerdier?')) return;
+  await fetch(BASE + '/api/settings/' + cat + '/reset', {method:'POST'});
+  showToast(cat + ' nulstillet!');
+  loadSettings();
 }
 
 function loadAll() {

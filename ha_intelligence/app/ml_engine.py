@@ -368,15 +368,17 @@ class MLEngine:
     def get_room_evidence(self, area_id: str, room_state: dict) -> dict:
         """Analyze active evidence sources for a room.
 
-        Returns dict with sources, count, detail for publishing
+        Returns dict with sources, count, detail, entities for publishing
         as room sensor attributes.
         """
         try:
             features = self.features.extract_room_features(area_id, room_state)
-            return self.features.analyze_evidence(features)
+            # Pass room_state with area_id for entity name resolution
+            rs = {**room_state, 'area_id': area_id}
+            return self.features.analyze_evidence(features, room_state=rs)
         except Exception as e:
             logger.debug(f"Evidence analysis error for {area_id}: {e}")
-            return {'sources': [], 'count': 0, 'detail': {}}
+            return {'sources': [], 'count': 0, 'detail': {}, 'entities': {}}
 
     def get_person_best_room(self, person_entity: str) -> Optional[dict]:
         """Get the best room estimate for a person from all sources.
