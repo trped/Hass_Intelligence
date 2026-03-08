@@ -1077,7 +1077,7 @@ async def periodic_feedback_status(feedback_engine):
 
 async def main():
     logger.info("=" * 50)
-    logger.info("HA Intelligence v1.0.0 starting...")
+    logger.info("HA Intelligence v1.0.1 starting...")
     logger.info("=" * 50)
 
     # Load config
