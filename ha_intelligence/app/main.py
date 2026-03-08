@@ -160,6 +160,12 @@ class SensorEngine:
                     person_entity, self._person_rooms[person_entity]
                 )
 
+        # Filter unavailable/unknown for all other domains
+        # (Bermuda BLE sensors above have their own unavailable handling)
+        if new_state in ('unavailable', 'unknown') and entity_id not in self._bermuda_to_person:
+            logger.debug(f"Ignoring {new_state} for {entity_id}")
+            return
+
         # Track motion/occupancy sensors → room state
         # Use registry to resolve area_id (NOT from state attributes)
         if domain in ('binary_sensor',) and any(
