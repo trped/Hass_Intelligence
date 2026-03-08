@@ -6,6 +6,8 @@ from datetime import datetime, timezone, timedelta
 
 logger = logging.getLogger(__name__)
 
+MAX_ACTIVE_QUESTIONS = 20
+
 
 class FeedbackEngine:
     """Asks users via MQTT notifications when ML confidence is low.
@@ -66,7 +68,22 @@ class FeedbackEngine:
             return False
         if not self.notification_engine or not self.notification_engine._can_send():
             return False
+        # Enforce max active questions
+        stats = self.db.get_feedback_stats()
+        if stats['pending'] >= MAX_ACTIVE_QUESTIONS:
+            return False
         return confidence < self.get_effective_threshold()
+
+    def _enforce_question_limit(self):
+        """Evict oldest entries from in-memory question context if over limit."""
+        if len(self._question_context) <= MAX_ACTIVE_QUESTIONS:
+            return
+        # Sort by key (question_id, ascending = oldest first)
+        sorted_ids = sorted(self._question_context.keys())
+        while len(self._question_context) > MAX_ACTIVE_QUESTIONS:
+            oldest_id = sorted_ids.pop(0)
+            del self._question_context[oldest_id]
+            logger.debug(f"Evicted oldest feedback context: {oldest_id}")
 
     # ── Question generation ────────────────────────────────────
 
@@ -136,6 +153,7 @@ class FeedbackEngine:
         )
 
         # Store context for learning when answer arrives
+        self._enforce_question_limit()
         self._question_context[q_id] = {
             'person_slug': person_slug,
             'room_slug': room_slug,
