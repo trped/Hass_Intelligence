@@ -701,6 +701,28 @@ class SensorEngine:
                     predicted_next_room = markov_result[0][0]
                     next_room_probability = round(markov_result[0][1], 3)
 
+            # Activity inference for home persons with known room
+            activity_attrs = {}
+            if is_home and room_id and self.activity_engine:
+                try:
+                    act_result = self.activity_engine.infer_activity(
+                        person_slug=person['slug'],
+                        person_name=person['name'],
+                        room_slug=room_id,
+                        room_name=room_name,
+                    )
+                    if act_result:
+                        activity_attrs = {
+                            'inferred_activity': act_result.get('activity', 'ukendt'),
+                            'activity_confidence': act_result.get('confidence', 0.0),
+                            'activity_source': act_result.get('source', 'none'),
+                            'activity_zone': act_result.get('zone', 'unknown'),
+                            'activity_candidates': act_result.get('candidates', []),
+                            'activity_devices': act_result.get('devices', {}),
+                        }
+                except Exception as e:
+                    logger.debug(f"Activity inference error for {person['slug']}: {e}")
+
             self.mqtt.publish_person(
                 slug=person['slug'],
                 name=person['name'],
@@ -730,20 +752,10 @@ class SensorEngine:
                     # Phase 4: Markov movement prediction
                     'predicted_next_room': predicted_next_room,
                     'next_room_probability': next_room_probability,
+                    # Activity inference (merged into person sensor)
+                    **activity_attrs,
                 }
             )
-
-            # Activity inference for home persons with known room
-            if is_home and room_id and self.activity_engine:
-                try:
-                    self.activity_engine.infer_activity(
-                        person_slug=person['slug'],
-                        person_name=person['name'],
-                        room_slug=room_id,
-                        room_name=room_name,
-                    )
-                except Exception as e:
-                    logger.debug(f"Activity inference error for {person['slug']}: {e}")
 
     async def _publish_system(self):
         """Publish system status sensor."""
@@ -880,7 +892,7 @@ async def periodic_feedback_status(feedback_engine):
 
 async def main():
     logger.info("=" * 50)
-    logger.info("HA Intelligence v0.8.1 starting...")
+    logger.info("HA Intelligence v0.8.5 starting...")
     logger.info("=" * 50)
 
     # Load config
@@ -933,11 +945,20 @@ async def main():
     # Subscribe to feedback answers
     mqtt.subscribe_feedback(feedback_engine.on_feedback_message)
 
-    # Initialize activity inference
+    # Initialize activity inference (no MQTT — activity merged into person sensor)
     activity_inference = ActivityInference(
         options, db=db, mqtt_publisher=mqtt,
         feedback_engine=feedback_engine)
     logger.info("Activity inference initialized")
+
+    # Cleanup old separate activity MQTT entities (migrated to person sensor attributes)
+    persons_for_cleanup = db.get_persons()
+    for p in persons_for_cleanup:
+        slug = p.get('slug', '')
+        if slug:
+            mqtt.remove_sensor(f"activity_{slug}")
+    if persons_for_cleanup:
+        logger.info(f"Cleaned up {len(persons_for_cleanup)} old activity MQTT entities")
 
     # Wire circular dependency
     feedback_engine.activity_inference = activity_inference

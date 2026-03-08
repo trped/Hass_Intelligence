@@ -1,5 +1,5 @@
 name: "HA Intelligence"
-version: "0.8.4"
+version: "0.8.5"
 slug: ha_intelligence
 description: "Self-learning household intelligence system"
 url: "https://github.com/trped/Hass_Intelligence"
@@ -33,8 +33,8 @@ options:
   feedback_confidence_threshold: 40
   feedback_bootstrap_days: 14
   feedback_activity_enabled: true
-  feedback_notify_service: ""
-  activity_zone_config: '{}'
+  feedback_notify_service: "notify.mobile_app_troels_mobil"
+  activity_zone_config: '{"darwins_vaerelse":{"zones":{"1":"skrivebord","2":"seng","3":"sofa_tv","4":"gulv_leg"},"epl_prefix":"sensor.epl_darwin_zone"},"udestuen":{"zones":{"1":"sofa_tv","2":"laenestol","3":"spisebord","4":"indgang"},"epl_prefix":"sensor.epl_udestuen_zone"},"alrum":{"zones":{"1":"sofa_tv","3":"koekken"},"epl_prefix":"sensor.epl_opholdsrum_zone"}}'
   activity_device_sensors: '{"alrum":{"tv":"sensor.plug_alrum_tv_cunsumption_power"},"udestuen":{"tv":"media_player.samsung_tv_udestuen"},"darwins_vaerelse":{"playstation":"media_player.playstation_5"},"kontor":{"pc":"media_player.kontorpc"}}'
   bermuda_sensors: '{"person.troels":"sensor.bermuda_aff9c3e51e7943268af745c50577d7a0_100_40004_area_last_seen","person.hanne":"sensor.hanne_iphone_area","person.darwin":"sensor.darwin_iphone_area","person.maria":"sensor.maria_iphone_area"}'
   log_level: "info"

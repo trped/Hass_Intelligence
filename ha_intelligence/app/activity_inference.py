@@ -52,10 +52,10 @@ FALLBACK_DEVICE_SENSORS = {
 class ActivityInference:
     """Infers activities from EPL zone data + device states."""
 
-    def __init__(self, options: dict, db, mqtt_publisher,
+    def __init__(self, options: dict, db, mqtt_publisher=None,
                  feedback_engine=None):
         self.db = db
-        self.mqtt = mqtt_publisher
+        self.mqtt = mqtt_publisher  # Optional — activity published via person sensor
         self.feedback_engine = feedback_engine
         self.active = options.get('feedback_activity_enabled', True)
 
@@ -253,21 +253,8 @@ class ActivityInference:
                 room_slug=room_slug, zone=zone or '',
                 device_states=device_states)
 
-        # 5. Publish activity sensor
+        # 5. Store current activity (no separate MQTT entity — merged into person sensor)
         self._current[person_slug] = result
-        self.mqtt.publish_activity(
-            person_slug=person_slug,
-            person_name=person_name,
-            state=activity,
-            attributes={
-                'room': room_slug,
-                'zone': zone or 'unknown',
-                'confidence': conf,
-                'source': source,
-                'candidates': candidates[:5],
-                'devices': device_states,
-            }
-        )
 
         return result
 
