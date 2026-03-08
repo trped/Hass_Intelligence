@@ -115,10 +115,11 @@ class SensorEngine:
         self._publish_interval = 60  # seconds
         self._stale_threshold = timedelta(minutes=30)
         self._last_predictions = {}  # sensor_target -> prediction_id (for feedback loop)
-        self._insights_cache = {'persons': {}, 'rooms': {}, 'hustilstand': {}}  # Cache for web UI insights tab
+        self._insights_cache = {'persons': {}, 'rooms': {}}  # Cache for web UI insights tab
         self._debounce_timers: dict[str, asyncio.TimerHandle] = {}
         self._debounce_seconds = 30
         self._last_processed_state: dict[str, str] = {}  # entity_id -> last state we acted on
+        self._legacy_cleanup_done = False
 
     async def on_state_change(self, entity_id: str, old_state: str,
                                new_state: str, attributes: dict):
@@ -584,7 +585,12 @@ class SensorEngine:
                 await self._publish_rooms()
                 await self._publish_persons()
                 await self._publish_system()
-                await self._publish_hustilstand()
+
+                # One-time cleanup of removed legacy sensors
+                if not self._legacy_cleanup_done:
+                    self.mqtt.remove_sensor('household')
+                    self.mqtt.remove_sensor('hustilstand')
+                    self._legacy_cleanup_done = True
 
                 # Check notification triggers
                 if self.notification_engine:
@@ -1053,110 +1059,6 @@ class SensorEngine:
             }
         )
 
-    async def _publish_hustilstand(self):
-        """Publish sensor.hai_hustilstand synced from HA's input_select.hus_tilstand.
-
-        Reads HA state via event listener cache. Falls back to local inference
-        if HA entity is unavailable.
-        """
-        now = datetime.now(timezone.utc)
-        hour = now.hour
-        weekday = now.weekday()
-
-        # Count persons home
-        persons_home = sum(
-            1 for info in self._person_states.values()
-            if info.get('ha_state') == 'home'
-        )
-        total_persons = len(self._person_states) or 1
-
-        # Count rooms with active motion
-        rooms_active = sum(
-            1 for info in self._room_states.values()
-            if any(v == 'on' for v in info.get('sensors', {}).values())
-        )
-
-        # Get hustilstand config from settings
-        ht_config = {}
-        if self.settings:
-            ht_config = self.settings.get_hustilstand_config()
-
-        ha_entity = ht_config.get('entity_id', 'input_select.hus_tilstand')
-        state_map = ht_config.get('state_map', {})
-        enabled = ht_config.get('enabled', True)
-
-        # Try to read HA state from tracked entities
-        ha_state = self._entity_states.get(ha_entity)
-        source = 'unknown'
-
-        if enabled and ha_state:
-            # Map HA state through configurable state_map
-            raw = ha_state.get('state', '')
-            mode = state_map.get(raw, raw) if state_map else raw
-            source = 'ha_entity'
-        else:
-            # Fallback: local inference (same logic as old _publish_household)
-            if persons_home == 0:
-                mode = 'ude'
-            elif hour < 6 or hour >= 23:
-                mode = 'nat'
-            else:
-                mode = 'hjemme'
-            source = 'local_inference'
-
-        # Build person list
-        persons_at_home = [
-            eid.replace('person.', '')
-            for eid, info in self._person_states.items()
-            if info.get('ha_state') == 'home'
-        ]
-
-        self.mqtt.publish_hustilstand(
-            state=mode,
-            attributes={
-                'ha_entity': ha_entity,
-                'source': source,
-                'persons_home': persons_home,
-                'persons_total': total_persons,
-                'persons_at_home': persons_at_home,
-                'rooms_active': rooms_active,
-                'occupancy_ratio': round(persons_home / total_persons, 2),
-                'hour': hour,
-                'weekday': weekday,
-            }
-        )
-
-        # Cache for insights API
-        self._insights_cache['hustilstand'] = {
-            'state': mode,
-            'source': source,
-            'ha_entity': ha_entity,
-            'persons_home': persons_home,
-            'persons_total': total_persons,
-            'persons_at_home': persons_at_home,
-            'rooms_active': rooms_active,
-        }
-
-        # Also publish legacy household sensor for backwards compat
-        legacy_map = {
-            'hjemme': 'hverdag' if weekday < 5 else 'weekend',
-            'nat': 'nat',
-            'ude': 'tom',
-            'kun_hunde': 'tom',
-            'ferie': 'tom',
-        }
-        legacy_mode = legacy_map.get(mode, mode)
-        if 6 <= hour < 10 and mode == 'hjemme':
-            legacy_mode = 'morgen'
-        self.mqtt.publish_household(
-            state=legacy_mode,
-            attributes={
-                'persons_home': persons_home,
-                'persons_total': total_persons,
-                'rooms_active': rooms_active,
-                'occupancy_ratio': round(persons_home / total_persons, 2),
-            }
-        )
 
 
 # ── Periodic helpers ─────────────────────────────────────────────
