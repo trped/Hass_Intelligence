@@ -682,6 +682,32 @@ def get_dashboard_html() -> str:
   .zone-row input { flex:1; }
   .settings-toast { position:fixed; bottom:20px; right:20px; background:var(--green); color:#fff; padding:10px 20px; border-radius:8px; font-size:13px; z-index:100; display:none; }
   @media(max-width:640px) { .settings-layout { flex-direction:column; } .settings-nav { width:100%; flex-direction:row; overflow-x:auto; } }
+
+  /* Entity picker */
+  .entity-picker-layout { display:flex; gap:0; min-height:500px; }
+  .entity-picker-sidebar { width:180px; border-right:1px solid var(--border); padding:12px; flex-shrink:0; }
+  .entity-picker-main { flex:1; padding:16px; overflow-y:auto; }
+  .ep-cat-btn { display:flex; align-items:center; gap:8px; width:100%; padding:8px 12px; border:none; background:transparent; cursor:pointer; border-radius:6px; font-size:13px; text-align:left; color:var(--text); }
+  .ep-cat-btn:hover { background:rgba(255,255,255,0.05); }
+  .ep-cat-btn.active { background:var(--accent); color:white; }
+  .ep-cat-btn .ep-count { margin-left:auto; font-size:11px; opacity:0.7; }
+  .ep-area-group { margin-bottom:12px; }
+  .ep-area-header { display:flex; align-items:center; gap:8px; padding:8px; cursor:pointer; font-weight:600; border-radius:6px; }
+  .ep-area-header:hover { background:rgba(255,255,255,0.05); }
+  .ep-entity-row { display:flex; flex-direction:column; gap:2px; padding:8px 12px; border:1px solid var(--border); border-radius:6px; margin:4px 0; }
+  .ep-entity-row:hover { border-color:var(--accent); }
+  .ep-entity-line1 { display:flex; align-items:center; gap:8px; }
+  .ep-entity-line1 input[type=checkbox] { flex-shrink:0; }
+  .ep-entity-name { font-weight:500; flex:1; }
+  .ep-badge { font-size:11px; padding:1px 6px; border-radius:10px; }
+  .ep-badge-suggested { background:#fef3c7; color:#92400e; }
+  .ep-entity-id { font-size:11px; color:var(--text-dim); padding-left:26px; }
+  .ep-entity-meta { font-size:11px; color:var(--text-dim); padding-left:26px; display:flex; gap:12px; }
+  .ep-state-on { color:var(--green); }
+  .ep-state-off { color:var(--text-dim); }
+  .ep-sidebar-stats { margin-top:16px; padding-top:12px; border-top:1px solid var(--border); font-size:12px; color:var(--text-dim); }
+  .ep-actions { display:flex; gap:8px; margin-top:16px; padding-top:12px; border-top:1px solid var(--border); }
+  @media(max-width:640px) { .entity-picker-layout { flex-direction:column; } .entity-picker-sidebar { width:100%; border-right:none; border-bottom:1px solid var(--border); } }
 </style>
 </head>
 <body>
@@ -786,6 +812,7 @@ def get_dashboard_html() -> str:
     <button data-page="s-zones" onclick="switchSettingsPage('s-zones')">Zoner</button>
     <button data-page="s-ml" onclick="switchSettingsPage('s-ml')">ML Model</button>
     <button data-page="s-system" onclick="switchSettingsPage('s-system')">System</button>
+    <button data-page="s-entities" onclick="switchSettingsPage('s-entities')">Entities</button>
   </div>
   <div style="flex:1">
 
@@ -868,6 +895,31 @@ def get_dashboard_html() -> str:
         <div class="settings-actions">
           <button class="btn-save" onclick="saveSystem()">Gem</button>
           <button class="btn-reset" onclick="resetCategory('system')">Nulstil</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Entities -->
+    <div id="s-entities" class="settings-page">
+      <div class="entity-picker-layout">
+        <div class="entity-picker-sidebar">
+          <h3 style="margin:0 0 12px;font-size:14px;">Kategorier</h3>
+          <div id="ep-category-list"></div>
+          <div class="ep-sidebar-stats">
+            <div>Valgte: <span id="ep-total-selected">0</span></div>
+            <div>Foreslaaede: <span id="ep-total-suggestions">0</span></div>
+          </div>
+        </div>
+        <div class="entity-picker-main">
+          <div id="ep-category-header"></div>
+          <input type="text" id="ep-search" placeholder="Soeg entities..."
+                 class="settings-field" style="margin-bottom:12px;"
+                 oninput="filterEntities(this.value)">
+          <div id="ep-entity-list"></div>
+          <div class="ep-actions">
+            <button class="btn-save" onclick="saveEntitySelections()">Gem valg</button>
+            <button class="btn-reset" onclick="resetEntitySelections()">Nulstil</button>
+          </div>
         </div>
       </div>
     </div>
@@ -1316,6 +1368,163 @@ function switchSettingsPage(pageId) {
   document.querySelectorAll('.settings-page').forEach(p => p.classList.remove('active'));
   document.querySelector(`.settings-nav [data-page="${pageId}"]`).classList.add('active');
   document.getElementById(pageId).classList.add('active');
+  if (pageId === 's-entities') {
+    loadEntityPickerCategories();
+    loadEntityPickerCategory(epCurrentCategory);
+  }
+}
+
+// ── Entity Picker ──────────────────────────────
+let epCurrentCategory = 'persons';
+let epCategoryData = {};
+let epSelections = {};
+
+async function loadEntityPickerCategories() {
+  try {
+    const data = await fetchJson('/api/entity-picker/categories');
+    const list = document.getElementById('ep-category-list');
+    if (!list) return;
+    list.innerHTML = '';
+    let totalSelected = 0;
+    data.categories.forEach(cat => {
+      totalSelected += cat.selected_count;
+      const btn = document.createElement('button');
+      btn.className = 'ep-cat-btn' + (cat.key === epCurrentCategory ? ' active' : '');
+      btn.innerHTML = '<span>' + cat.label + '</span><span class="ep-count">' + cat.selected_count + '</span>';
+      btn.onclick = () => loadEntityPickerCategory(cat.key);
+      list.appendChild(btn);
+    });
+    document.getElementById('ep-total-selected').textContent = totalSelected;
+
+    const sugData = await fetchJson('/api/entity-picker/suggestions');
+    document.getElementById('ep-total-suggestions').textContent = sugData.total;
+  } catch(e) { console.error('Failed to load categories:', e); }
+}
+
+async function loadEntityPickerCategory(category) {
+  epCurrentCategory = category;
+  document.querySelectorAll('.ep-cat-btn').forEach(btn => btn.classList.remove('active'));
+  const btns = document.querySelectorAll('.ep-cat-btn');
+  btns.forEach(btn => {
+    if (btn.onclick && btn.textContent.trim()) {
+      // Re-highlight active
+    }
+  });
+  await loadEntityPickerCategories();
+
+  try {
+    const data = await fetchJson('/api/entity-picker/' + category + '/entities');
+    epCategoryData[category] = data;
+
+    if (!epSelections[category]) {
+      epSelections[category] = new Set();
+      data.areas.forEach(area => {
+        area.entities.forEach(e => {
+          if (e.selected) epSelections[category].add(e.entity_id);
+        });
+      });
+    }
+    renderEntityList(data);
+  } catch(e) { console.error('Failed to load entities:', e); }
+}
+
+function renderEntityList(data) {
+  const container = document.getElementById('ep-entity-list');
+  const header = document.getElementById('ep-category-header');
+  if (!container) return;
+
+  header.innerHTML = '<h3 style="margin:0 0 8px">' + data.label + ' (' + data.total + ' entities)</h3>';
+  container.innerHTML = '';
+
+  data.areas.forEach(area => {
+    const group = document.createElement('div');
+    group.className = 'ep-area-group';
+
+    const areaHeader = document.createElement('div');
+    areaHeader.className = 'ep-area-header';
+    areaHeader.innerHTML = '<span>&#9660;</span> <span>' + area.area_name + '</span> <span style="opacity:0.5">(' + area.count + ')</span>';
+    areaHeader.onclick = () => {
+      const content = group.querySelector('.ep-area-content');
+      const arrow = areaHeader.querySelector('span');
+      if (content.style.display === 'none') {
+        content.style.display = 'block'; arrow.textContent = '\u25BC';
+      } else {
+        content.style.display = 'none'; arrow.textContent = '\u25B6';
+      }
+    };
+    group.appendChild(areaHeader);
+
+    const content = document.createElement('div');
+    content.className = 'ep-area-content';
+    area.entities.forEach(e => {
+      const row = document.createElement('div');
+      row.className = 'ep-entity-row';
+      row.dataset.entityId = e.entity_id;
+
+      const isSelected = epSelections[epCurrentCategory] && epSelections[epCurrentCategory].has(e.entity_id);
+      const stateClass = e.state === 'on' ? 'ep-state-on' : 'ep-state-off';
+      let badges = '';
+      if (e.suggested) badges += '<span class="ep-badge ep-badge-suggested">Foreslaaet</span>';
+
+      row.innerHTML =
+        '<div class="ep-entity-line1">' +
+          '<input type="checkbox" ' + (isSelected ? 'checked' : '') +
+          ' onchange="toggleEntity(\'' + e.entity_id.replace(/'/g, "\\'") + '\', this.checked)">' +
+          '<span class="ep-entity-name">' + (e.friendly_name || e.entity_id) + '</span>' +
+          badges +
+        '</div>' +
+        '<div class="ep-entity-id">' + e.entity_id + '</div>' +
+        '<div class="ep-entity-meta">' +
+          (e.device_class ? '<span>' + e.device_class + '</span>' : '') +
+          '<span class="' + stateClass + '">State: ' + (e.state || '?') + '</span>' +
+        '</div>';
+      content.appendChild(row);
+    });
+    group.appendChild(content);
+    container.appendChild(group);
+  });
+}
+
+function toggleEntity(entityId, checked) {
+  if (!epSelections[epCurrentCategory]) {
+    epSelections[epCurrentCategory] = new Set();
+  }
+  if (checked) {
+    epSelections[epCurrentCategory].add(entityId);
+  } else {
+    epSelections[epCurrentCategory].delete(entityId);
+  }
+}
+
+async function saveEntitySelections() {
+  const category = epCurrentCategory;
+  const entityIds = [...(epSelections[category] || [])];
+  try {
+    const resp = await fetch(BASE + '/api/entity-picker/' + category + '/select', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({entity_ids: entityIds}),
+    });
+    if (resp.ok) {
+      showToast(entityIds.length + ' entities gemt for ' + category);
+      await loadEntityPickerCategories();
+    } else {
+      showToast('Fejl ved gem');
+    }
+  } catch(e) { showToast('Fejl ved gem'); }
+}
+
+async function resetEntitySelections() {
+  delete epSelections[epCurrentCategory];
+  await loadEntityPickerCategory(epCurrentCategory);
+}
+
+function filterEntities(query) {
+  const q = query.toLowerCase();
+  document.querySelectorAll('.ep-entity-row').forEach(row => {
+    const text = row.textContent.toLowerCase();
+    row.style.display = text.includes(q) ? '' : 'none';
+  });
 }
 
 function showToast(msg) {
