@@ -116,6 +116,9 @@ class SensorEngine:
         self._stale_threshold = timedelta(minutes=30)
         self._last_predictions = {}  # sensor_target -> prediction_id (for feedback loop)
         self._insights_cache = {'persons': {}, 'rooms': {}, 'hustilstand': {}}  # Cache for web UI insights tab
+        self._debounce_timers: dict[str, asyncio.TimerHandle] = {}
+        self._debounce_seconds = 30
+        self._last_processed_state: dict[str, str] = {}  # entity_id -> last state we acted on
 
     async def on_state_change(self, entity_id: str, old_state: str,
                                new_state: str, attributes: dict):
@@ -166,6 +169,10 @@ class SensorEngine:
             logger.debug(f"Ignoring {new_state} for {entity_id}")
             return
 
+        # Debounce rapid state flips (30s)
+        if self._should_debounce(entity_id, new_state):
+            return
+
         # Track motion/occupancy sensors → room state
         # Use registry to resolve area_id (NOT from state attributes)
         if domain in ('binary_sensor',) and any(
@@ -197,6 +204,30 @@ class SensorEngine:
         # Phase 4: Netatmo camera face detection → person room (highest confidence)
         if entity_id.startswith('input_text.netatmo_sidst_set_'):
             self._handle_netatmo_update(entity_id, new_state)
+
+    def _should_debounce(self, entity_id: str, new_state: str) -> bool:
+        """Check if state change should be debounced.
+
+        Returns True if the state flip happened within 30s of last change.
+        Person entities and input_selects are never debounced.
+        """
+        domain = entity_id.split('.')[0]
+        # Never debounce critical entities
+        if domain in ('person', 'input_select', 'alarm_control_panel'):
+            return False
+
+        last = self._last_processed_state.get(entity_id)
+        if last == new_state:
+            return True  # Same state, skip
+
+        # Cancel existing timer
+        timer = self._debounce_timers.pop(entity_id, None)
+        if timer:
+            timer.cancel()
+
+        # Record new state
+        self._last_processed_state[entity_id] = new_state
+        return False
 
     def _update_room_state(self, area_id: str, sensor_id: str, state: str):
         """Update room state based on motion/occupancy sensor."""
