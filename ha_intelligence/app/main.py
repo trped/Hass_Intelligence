@@ -222,6 +222,97 @@ class SensorEngine:
                 self._person_states[person_id]['source'] = entity_id
                 return
 
+    async def load_initial_states(self):
+        """Fetch current person, device_tracker, bermuda & occupancy states from HA REST API.
+
+        Called once at startup to populate _person_states, _room_states, and
+        _person_rooms BEFORE the first publish cycle. Without this, states
+        remain 'unknown' until a state_changed event arrives — which may
+        never happen for infrequently-changing entities like person.*.
+        """
+        import aiohttp
+
+        ha_url = os.environ.get('SUPERVISOR_API', 'http://supervisor/core')
+        token = os.environ.get('SUPERVISOR_TOKEN', '')
+        headers = {
+            'Authorization': f'Bearer {token}',
+            'Content-Type': 'application/json',
+        }
+
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    f'{ha_url}/api/states', headers=headers
+                ) as resp:
+                    if resp.status != 200:
+                        logger.error(f"Failed to fetch initial states: HTTP {resp.status}")
+                        return
+
+                    all_states = await resp.json()
+        except Exception as e:
+            logger.error(f"Failed to fetch initial states: {e}")
+            return
+
+        person_count = 0
+        tracker_count = 0
+        bermuda_count = 0
+        occupancy_count = 0
+
+        for state_obj in all_states:
+            entity_id = state_obj.get('entity_id', '')
+            state = state_obj.get('state', '')
+            attrs = state_obj.get('attributes', {})
+
+            if state in ('unavailable', 'unknown'):
+                continue
+
+            domain = entity_id.split('.')[0]
+
+            # Person entities → _person_states
+            if domain == 'person':
+                self._update_person_state(entity_id, state, attrs)
+                person_count += 1
+
+            # Device trackers → _person_states (via tracker-to-person mapping)
+            elif domain == 'device_tracker':
+                self._update_tracker_state(entity_id, state, attrs)
+                tracker_count += 1
+
+            # Bermuda BLE sensors → _person_rooms
+            elif entity_id in self._bermuda_to_person:
+                person_entity = self._bermuda_to_person[entity_id]
+                ble_area_id = attrs.get('area_id', '')
+                ble_distance = attrs.get('distance')
+                if ble_area_id and state not in ('', ):
+                    self._update_person_room(
+                        person_entity=person_entity,
+                        area_id=ble_area_id,
+                        area_name=state,
+                        confidence=0.9,
+                        source='ble',
+                        distance=float(ble_distance) if ble_distance is not None else None,
+                    )
+                    bermuda_count += 1
+
+            # Motion/occupancy sensors → _room_states
+            elif domain == 'binary_sensor' and any(
+                kw in entity_id for kw in ('motion', 'occupancy', 'presence', 'mmwave')
+            ):
+                area_id = None
+                if self.registry:
+                    area_id = self.registry.get_area_id(entity_id)
+                if not area_id:
+                    area_id = attrs.get('area_id')
+                if area_id:
+                    self._update_room_state(area_id, entity_id, state)
+                    occupancy_count += 1
+
+        logger.info(
+            f"Loaded initial states: {person_count} persons, "
+            f"{tracker_count} trackers, {bermuda_count} bermuda, "
+            f"{occupancy_count} occupancy sensors"
+        )
+
     def _cleanup_stale_states(self):
         """Remove stale room states where no sensors are active and
         last_occupied exceeds stale threshold."""
@@ -823,7 +914,7 @@ class SensorEngine:
         self.mqtt.publish_system_status(
             status=status,
             attributes={
-                'version': '0.8.6',
+                'version': '0.8.7',
                 'events_24h': stats['events_24h'],
                 'events_total': stats['events_total'],
                 'entities_discovered': stats['entities_discovered'],
@@ -982,6 +1073,11 @@ async def main():
     # Initialize Netatmo camera face detection mapping
     persons = db.get_persons()
     sensor_engine.init_netatmo_mapping(persons)
+
+    # Load current HA states BEFORE event listener starts
+    # This ensures _person_states, _room_states, _person_rooms are populated
+    # before the first publish cycle (fixes 'unknown' state on restart)
+    await sensor_engine.load_initial_states()
 
     event_listener = EventListener(
         db, registry=registry,

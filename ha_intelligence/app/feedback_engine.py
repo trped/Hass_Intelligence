@@ -70,11 +70,18 @@ class FeedbackEngine:
 
     # ── Question generation ────────────────────────────────────
 
+    def _timestamp_str(self) -> str:
+        """Format current local time for question text."""
+        from zoneinfo import ZoneInfo
+        now = datetime.now(ZoneInfo('Europe/Copenhagen'))
+        return now.strftime('%d/%m kl. %H:%M')
+
     def ask_room_state(self, room_slug: str, room_name: str,
                        confidence: float, prediction_id: int = None):
         """Ask user about room occupancy."""
         options = ["Optaget", "Tomt", "Ved ikke"]
-        question_text = f"Er {room_name} optaget?"
+        ts = self._timestamp_str()
+        question_text = f"Er {room_name} optaget? ({ts})"
 
         q_id = self.db.create_feedback_question(
             question_type='room_state',
@@ -94,7 +101,8 @@ class FeedbackEngine:
         """Ask user about person location."""
         room_names = [r['name'] for r in rooms[:3]]
         options = room_names + ["Ude", "Ved ikke"]
-        question_text = f"Hvor er {person_name}?"
+        ts = self._timestamp_str()
+        question_text = f"Hvor er {person_name}? ({ts})"
 
         q_id = self.db.create_feedback_question(
             question_type='person_location',
@@ -115,7 +123,8 @@ class FeedbackEngine:
                       device_states: dict = None):
         """Ask user about person's current activity."""
         options = candidates[:4] + ["Andet"]
-        question_text = f"Hvad laver {person_name} i {room_name}?"
+        ts = self._timestamp_str()
+        question_text = f"Hvad laver {person_name} i {room_name}? ({ts})"
 
         q_id = self.db.create_feedback_question(
             question_type='activity',
