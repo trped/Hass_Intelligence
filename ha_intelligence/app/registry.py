@@ -90,6 +90,7 @@ class Registry:
         self._entities = {}   # entity_id -> {area_id, device_id, device_class, platform, ...}
         self._devices = {}    # device_id -> {area_id, manufacturer, model, name, ...}
         self._area_map = {}   # entity_id -> resolved area_id
+        self._area_names = {} # area_id -> display name
 
     @property
     def entity_count(self) -> int:
@@ -124,6 +125,10 @@ class Registry:
         """Get relevance level for an entity based on domain."""
         domain = entity_id.split('.')[0] if '.' in entity_id else 'unknown'
         return DOMAIN_RELEVANCE.get(domain, 'low')
+
+    def get_area_name(self, area_id: str) -> str | None:
+        """Get human-readable area name from area_id."""
+        return self._area_names.get(area_id)
 
     async def load_all(self):
         """Fetch entity and device registries from HA via WebSocket."""
@@ -168,6 +173,17 @@ class Registry:
                         self._parse_device_registry(msg.get('result', []))
                     else:
                         logger.error(f"Device registry fetch failed: {msg}")
+
+                    # Fetch area registry
+                    await ws.send_json({
+                        'id': 3,
+                        'type': 'config/area_registry/list'
+                    })
+                    msg = await ws.receive_json()
+                    if msg.get('success'):
+                        self._parse_area_registry(msg.get('result', []))
+                    else:
+                        logger.error(f"Area registry fetch failed: {msg}")
 
         except Exception as e:
             logger.error(f"Registry load error: {e}")
@@ -216,6 +232,15 @@ class Registry:
                 'disabled_by': dev.get('disabled_by'),
             }
         logger.info(f"Device registry: {len(self._devices)} devices")
+
+    def _parse_area_registry(self, areas: list):
+        """Parse area registry response into area_id -> name mapping."""
+        self._area_names = {}
+        for area in areas:
+            area_id = area.get('area_id', '')
+            if area_id:
+                self._area_names[area_id] = area.get('name', area_id)
+        logger.info(f"Area registry: {len(self._area_names)} areas")
 
     def _build_area_map(self):
         """Build entity_id -> area_id mapping with device fallback."""
