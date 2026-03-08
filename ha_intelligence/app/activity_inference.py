@@ -40,6 +40,14 @@ DEVICE_ACTIVITIES = {
     'pc_on': 'computer',
 }
 
+# Fallback device sensors when add-on config is empty
+FALLBACK_DEVICE_SENSORS = {
+    'alrum': {'tv': 'sensor.plug_alrum_tv_cunsumption_power'},
+    'udestuen': {'tv': 'media_player.samsung_tv_udestuen'},
+    'darwins_vaerelse': {'playstation': 'media_player.playstation_5'},
+    'kontor': {'pc': 'media_player.kontorpc'},
+}
+
 
 class ActivityInference:
     """Infers activities from EPL zone data + device states."""
@@ -59,13 +67,17 @@ class ActivityInference:
         except (json.JSONDecodeError, TypeError):
             self.zone_config = {}
 
-        # Parse device sensors
+        # Parse device sensors (use fallback if config is empty)
         device_raw = options.get('activity_device_sensors', '{}')
         try:
             self.device_sensors = json.loads(device_raw) if isinstance(
                 device_raw, str) else device_raw
         except (json.JSONDecodeError, TypeError):
             self.device_sensors = {}
+
+        if not self.device_sensors:
+            self.device_sensors = dict(FALLBACK_DEVICE_SENSORS)
+            logger.info("Using fallback device sensors (config empty)")
 
         # HA Supervisor API
         self._ha_url = os.environ.get(
