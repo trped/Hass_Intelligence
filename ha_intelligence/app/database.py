@@ -746,7 +746,7 @@ CREATE TABLE IF NOT EXISTS system_config (
 
 -- Default config
 INSERT OR IGNORE INTO system_config (key, value) VALUES
-    ('version', '0.8.1'),
+    ('version', '1.0.2'),
     ('started_at', datetime('now')),
     ('confidence_threshold', '0.4');
 
