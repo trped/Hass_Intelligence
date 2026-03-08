@@ -12,10 +12,10 @@ logger = logging.getLogger(__name__)
 # Fallback zone types per room when no EPL zone data available
 ROOM_ZONE_DEFAULTS = {
     'kontor': 'skrivebord',
-    'sovevarelse': 'seng',
+    'sovevaerelse': 'seng',
     'alrum': 'sofa_tv',
     'darwins_vaerelse': 'sofa_tv',
-    'koekken': 'koekken',
+    'kokken': 'koekken',
     'gang': 'indgang',
     'udestuen': 'sofa_tv',
     'badevaerelse': None,

@@ -1,5 +1,5 @@
 name: "HA Intelligence"
-version: "0.8.2"
+version: "0.8.3"
 slug: ha_intelligence
 description: "Self-learning household intelligence system"
 url: "https://github.com/trped/Hass_Intelligence"
@@ -35,7 +35,7 @@ options:
   feedback_activity_enabled: true
   feedback_notify_service: ""
   activity_zone_config: '{}'
-  activity_device_sensors: '{}'
+  activity_device_sensors: '{"alrum":{"tv":"sensor.plug_alrum_tv_cunsumption_power"},"udestuen":{"tv":"media_player.samsung_tv_udestuen"},"darwins_vaerelse":{"playstation":"media_player.playstation_5"},"kontor":{"pc":"media_player.kontorpc"}}'
   bermuda_sensors: '{"person.troels":"sensor.bermuda_aff9c3e51e7943268af745c50577d7a0_100_40004_area_last_seen","person.hanne":"sensor.hanne_iphone_area","person.darwin":"sensor.darwin_iphone_area","person.maria":"sensor.maria_iphone_area"}'
   log_level: "info"
 schema:
