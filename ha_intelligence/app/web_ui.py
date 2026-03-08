@@ -443,7 +443,7 @@ def get_dashboard_html() -> str:
 
 <h1>
   <span class="icon">&#129504;</span> HA Intelligence
-  <span class="version">v0.8.8</span>
+  <span class="version">v0.8.9</span>
   <span style="flex:1"></span>
   <button class="refresh-btn" onclick="loadAll()">Opdater</button>
 </h1>

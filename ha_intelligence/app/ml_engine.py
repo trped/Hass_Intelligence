@@ -406,16 +406,30 @@ class MLEngine:
             except Exception:
                 pass
 
-        # BLE/Bermuda: confidence 0.9 (lower than fresh Netatmo)
+        # BLE/Bermuda: room transition detection
+        # BLE in a DIFFERENT room overrides Netatmo (person has moved)
+        # BLE in the SAME room defers to Netatmo (higher confidence)
+        # BLE confidence must be >= 0.5 to be trusted
         ble_room = self._person_rooms.get(person_entity)
         if ble_room and ble_room.get('room'):
             ble_conf = ble_room.get('confidence', 0.9)
-            if not best or ble_conf > best['confidence']:
+            if not best:
+                # No Netatmo data — BLE wins if confident enough
+                if ble_conf >= 0.5:
+                    best = {
+                        'room': ble_room['room'],
+                        'confidence': ble_conf,
+                        'source': 'bermuda_ble',
+                    }
+            elif ble_room['room'] != best.get('room') and ble_conf >= 0.5:
+                # BLE says DIFFERENT room than Netatmo — BLE wins
+                # (person has physically moved since camera last saw them)
                 best = {
                     'room': ble_room['room'],
                     'confidence': ble_conf,
                     'source': 'bermuda_ble',
                 }
+            # If same room: keep Netatmo (higher confidence, confirms BLE)
 
         return best
 
