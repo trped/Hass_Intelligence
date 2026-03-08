@@ -889,7 +889,8 @@ function renderRoomInsights(rooms) {
     const src = r.source || '-';
     const evidSrcs = r.evidence_sources || [];
     const evidCount = r.evidence_count || 0;
-    const evidDetail = r.evidence_detail || [];
+    const evidDetailRaw = r.evidence_detail || {};
+    const evidDetail = Array.isArray(evidDetailRaw) ? evidDetailRaw : Object.entries(evidDetailRaw).map(([k,v]) => `${k}: ${v}`);
     const ruleS = r.rule_state || '-';
     const ruleC = r.rule_confidence || 0;
     const mlS = r.ml_state || '-';
